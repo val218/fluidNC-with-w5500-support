@@ -1,4 +1,4 @@
-- name: Build wifi_s3_ethernet
+name: Build wifi_s3_ethernet
         run: pio run -e wifi_s3_ethernet
 
 on:
