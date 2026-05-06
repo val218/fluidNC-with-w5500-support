@@ -3,24 +3,22 @@
 #ifdef ENABLE_ETHERNET
 
 #include <ETH.h>
-#include <SPI.h>
 #include <driver/spi_master.h>
 #include <esp_log.h>
 
 static const char* TAG = "Ethernet";
 
-// dpCREATOR R2 - confirmed from schematic
 #define W5500_CS_GPIO    14
 #define W5500_INT_GPIO   9
 #define W5500_RST_GPIO   -1
 #define W5500_PHY_ADDR   1
-#define W5500_SPI_HOST   (spi_host_device_t)1   // SPI2_HOST on ESP32-S3
+#define W5500_SPI_HOST   SPI2_HOST
 #define W5500_SPI_SCK    12
 #define W5500_SPI_MISO   13
 #define W5500_SPI_MOSI   11
 #define W5500_SPI_MHZ    20
 
-static void eth_event_handler(WiFiEvent_t event) {
+static void eth_event_handler(arduino_event_id_t event) {
     switch (event) {
         case ARDUINO_EVENT_ETH_START:
             ESP_LOGI(TAG, "Started");
@@ -46,17 +44,19 @@ static void eth_event_handler(WiFiEvent_t event) {
 void ethernet_init() {
     ESP_LOGI(TAG, "Init W5500 CS=IO%d INT=IO%d", W5500_CS_GPIO, W5500_INT_GPIO);
 
-    WiFi.onEvent(eth_event_handler);
+    Network.onEvent(eth_event_handler);
 
     ETH.begin(
-        W5500_PHY_ADDR,      // phy_addr
-        W5500_INT_GPIO,      // intr_pin
-        W5500_RST_GPIO,      // rst_pin
-        W5500_CS_GPIO,       // cs_pin
-        W5500_SPI_SCK,       // sck_pin
-        W5500_SPI_MISO,      // miso_pin
-        W5500_SPI_MOSI,      // mosi_pin
-        W5500_SPI_HOST       // spi_host
+        ETH_PHY_W5500,
+        W5500_PHY_ADDR,
+        W5500_CS_GPIO,
+        W5500_INT_GPIO,
+        W5500_RST_GPIO,
+        W5500_SPI_HOST,
+        W5500_SPI_SCK,
+        W5500_SPI_MISO,
+        W5500_SPI_MOSI,
+        W5500_SPI_MHZ
     );
 
     ESP_LOGI(TAG, "W5500 init complete");
