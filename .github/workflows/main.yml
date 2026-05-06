@@ -1,4 +1,5 @@
-name: Build FluidNC W5500 Ethernet
+name: Build wifi_s3_ethernet
+        run: pio run -e wifi_s3_ethernet
 
 on:
   push:
