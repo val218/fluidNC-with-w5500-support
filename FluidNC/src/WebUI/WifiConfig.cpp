@@ -996,6 +996,9 @@ namespace WebUI {
         WiFiConfig(const char* name) : Module(name) {}
 
         void init() {
+#ifdef ENABLE_ETHERNET
+    ethernet_init();
+#endif
             _sta_ssid    = new StringSetting("Station SSID", WEBSET, WA, "ESP100", "Sta/SSID", "", MIN_SSID_LENGTH, MAX_SSID_LENGTH);
             _hostname    = new HostnameSetting("Hostname", "ESP112", "Hostname", "fluidnc");
             _ap_channel  = new IntSetting("AP Channel", WEBSET, WA, "ESP108", "AP/Channel", 1, 1, 14);
