@@ -41,6 +41,7 @@ jobs:
         with:
           name: fluidnc-w5500-${{ github.sha }}
           path: |
-            .pio/build/wifi_s3_ethernet/firmware.bin
+           .pio/build/wifi_s3_ethernet/firmware.bin
             .pio/build/wifi_s3_ethernet/partitions.bin
+            .pio/build/wifi_s3_ethernet/bootloader.bin
           retention-days: 30
