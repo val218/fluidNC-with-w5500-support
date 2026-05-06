@@ -3,11 +3,11 @@
 #ifdef ENABLE_ETHERNET
 
 #include <esp_eth.h>
-#include <esp_eth_mac_w5500.h>
-#include <esp_eth_phy_w5500.h>
+#include <esp_eth_mac.h>
+#include <esp_eth_phy.h>
+#include <driver/spi_master.h>
 #include <esp_netif.h>
 #include <esp_event.h>
-#include <driver/spi_master.h>
 #include "../Logging.h"
 
 // dpCREATOR R2 - confirmed from schematic
