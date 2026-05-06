@@ -33,6 +33,9 @@
 #if ESP_IDF_VERSION_MAJOR >= 5
 #    include <esp_wifi.h>
 
+#ifdef ENABLE_ETHERNET
+#    include "EthernetConfig.h"
+#endif
 #    define tcpip_adapter_dhcp_status_t esp_netif_dhcp_status_t
 #    define tcpip_adapter_dhcpc_get_status esp_netif_dhcpc_get_status
 #    define tcpip_adapter_get_ip_info esp_netif_get_ip_info
