@@ -1,6 +1,7 @@
 // Copyright (c) 2014 Luc Lebosse. All rights reserved.
 // Use of this source code is governed by a GPLv3 license that can be found in the LICENSE file.
 
+#include "EthernetConfig.h"
 #include "Settings.h"
 #include "Machine/MachineConfig.h"
 #include <sstream>
@@ -33,9 +34,11 @@
 #if ESP_IDF_VERSION_MAJOR >= 5
 #    include <esp_wifi.h>
 
+void init() {
 #ifdef ENABLE_ETHERNET
-#    include "EthernetConfig.h"
+    ethernet_init();
 #endif
+
 #    define tcpip_adapter_dhcp_status_t esp_netif_dhcp_status_t
 #    define tcpip_adapter_dhcpc_get_status esp_netif_dhcpc_get_status
 #    define tcpip_adapter_get_ip_info esp_netif_get_ip_info
