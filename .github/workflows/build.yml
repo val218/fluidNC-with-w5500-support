@@ -1,5 +1,4 @@
-name: Build wifi_s3_ethernet
-        run: pio run -e wifi_s3_ethernet
+name: Build FluidNC W5500 Ethernet
 
 on:
   push:
@@ -35,15 +34,13 @@ jobs:
         run: pip install platformio
 
       - name: Build wifi_s3_ethernet
-        run: |
-          cd FluidNC
-          pio run -e wifi_s3_ethernet
+        run: pio run -e wifi_s3_ethernet
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: fluidnc-w5500-${{ github.sha }}
           path: |
-            FluidNC/.pio/build/wifi_s3_ethernet/firmware.bin
-            FluidNC/.pio/build/wifi_s3_ethernet/partitions.bin
+            .pio/build/wifi_s3_ethernet/firmware.bin
+            .pio/build/wifi_s3_ethernet/partitions.bin
           retention-days: 30
