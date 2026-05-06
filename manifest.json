@@ -1,0 +1,26 @@
+{
+  "name": "FluidNC 4.0.3 R2 - W5500 Ethernet support",
+  "version": "4.0.3",
+  "home_page": "https://dpcreator.eu/firmware",
+  "funding_url": "https://dpcreator.eu",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "bootloader.bin",
+          "offset": 0
+        },
+        {
+          "path": "partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "firmware.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
