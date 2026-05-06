@@ -8,7 +8,6 @@
 #include <esp_netif.h>
 #include <esp_event.h>
 #include <driver/spi_master.h>
-#include <driver/gpio.h>
 #include <esp_log.h>
 
 static const char* TAG = "Ethernet";
@@ -40,20 +39,27 @@ static void got_ip_handler(void* arg, esp_event_base_t event_base,
 void ethernet_init() {
     ESP_LOGI(TAG, "Init W5500 CS=IO%d INT=IO%d", W5500_CS_GPIO, W5500_INT_GPIO);
 
-    // SPI bus already initialised by FluidNC SD card code - just add device
-    spi_device_interface_config_t spi_devcfg = {};
-    spi_devcfg.mode           = 0;
-    spi_devcfg.clock_speed_hz = W5500_SPI_HZ;
-    spi_devcfg.queue_size     = 20;
-    spi_devcfg.spics_io_num   = W5500_CS_GPIO;
+    // SPI bus already initialised by FluidNC SD card code.
+    // Create a device handle on the existing bus.
+    spi_device_interface_config_t devcfg = {};
+    devcfg.command_bits     = 1;
+    devcfg.address_bits     = 7;
+    devcfg.mode             = 0;
+    devcfg.clock_speed_hz   = W5500_SPI_HZ;
+    devcfg.queue_size       = 20;
+    devcfg.spics_io_num     = W5500_CS_GPIO;
 
-    // Build w5500 config struct manually - avoids needing the external component
-    eth_w5500_config_t w5500_config = {};
-    w5500_config.spi_host_id  = W5500_SPI_HOST;
-    w5500_config.spi_devcfg   = &spi_devcfg;
+    spi_device_handle_t spi_handle = NULL;
+    if (spi_bus_add_device(W5500_SPI_HOST, &devcfg, &spi_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "SPI device add failed"); return;
+    }
+
+    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(spi_handle);
     w5500_config.int_gpio_num = W5500_INT_GPIO;
 
     eth_mac_config_t mac_config   = ETH_MAC_DEFAULT_CONFIG();
+    mac_config.smi_mdc_gpio_num   = -1;
+    mac_config.smi_mdio_gpio_num  = -1;
     mac_config.rx_task_stack_size = 4096;
 
     esp_eth_mac_t* mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
