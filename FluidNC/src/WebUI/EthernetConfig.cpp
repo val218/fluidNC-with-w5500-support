@@ -4,6 +4,7 @@
 
 #include <ETH.h>
 #include <SPI.h>
+#include <driver/spi_master.h>
 #include <esp_log.h>
 
 static const char* TAG = "Ethernet";
@@ -13,7 +14,7 @@ static const char* TAG = "Ethernet";
 #define W5500_INT_GPIO   9
 #define W5500_RST_GPIO   -1
 #define W5500_PHY_ADDR   1
-#define W5500_SPI_HOST   FSPI_HOST   // SPI2 on S3 = FSPI_HOST in older framework
+#define W5500_SPI_HOST   (spi_host_device_t)1   // SPI2_HOST on ESP32-S3
 #define W5500_SPI_SCK    12
 #define W5500_SPI_MISO   13
 #define W5500_SPI_MOSI   11
