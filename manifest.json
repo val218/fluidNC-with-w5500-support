@@ -9,15 +9,15 @@
       "chipFamily": "ESP32",
       "parts": [
         {
-          "path": "https://cdn.jsdelivr.net/gh/val218/fluidNC-with-w5500-support@v4.0.3_r2_w5500/bootloader.bin",
+          "path": "https://dpcreator.eu/index.php?route=account/firmware_bin&download_id=2&file=bootloader.bin",
           "offset": 0
         },
         {
-          "path": "https://cdn.jsdelivr.net/gh/val218/fluidNC-with-w5500-support@v4.0.3_r2_w5500/partitions.bin",
+          "path": "https://dpcreator.eu/index.php?route=account/firmware_bin&download_id=2&file=partitions.bin",
           "offset": 32768
         },
         {
-          "path": "https://cdn.jsdelivr.net/gh/val218/fluidNC-with-w5500-support@v4.0.3_r2_w5500/firmware.bin",
+          "path": "https://dpcreator.eu/index.php?route=account/firmware_bin&download_id=2&file=firmware.bin",
           "offset": 65536
         }
       ]
