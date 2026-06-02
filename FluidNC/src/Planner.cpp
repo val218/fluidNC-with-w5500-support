@@ -9,6 +9,7 @@
 */
 
 #include "Planner.h"
+#include "PathRetrace.h"  // PathRetrace plugin
 #include "Machine/MachineConfig.h"
 
 #include <cstdlib>  // PSoc Required for labs
@@ -426,6 +427,13 @@ bool plan_buffer_line(float* target, plan_line_data_t* pl_data) {
         // Finish up by recalculating the plan with the new block.
         planner_recalculate();
     }
+    // PathRetrace plugin: record this block for rewind
+    retrace_record_block(target, pl_data->feed_rate,
+                         (float)pl_data->spindle_speed,
+                         (uint8_t)pl_data->spindle,
+                         pl_data->coolant.Flood,
+                         pl_data->coolant.Mist);
+
     return true;
 }
 

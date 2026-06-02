@@ -24,6 +24,8 @@
 #    include "Driver/localfs.h"
 
 #    include "ToolChangers/atc.h"
+#    include "PathRetrace.h"  // PathRetrace plugin
+#    include "VizGenerator.h"  // VizGenerator plugin
 
 extern void make_user_commands();
 
@@ -152,6 +154,10 @@ void setup() {
         }
 
         make_proxies();
+
+        // PathRetrace + VizGenerator plugin init
+        retrace_init();
+        viz_init();
 
     } catch (std::exception& ex) {
         // Log exception:

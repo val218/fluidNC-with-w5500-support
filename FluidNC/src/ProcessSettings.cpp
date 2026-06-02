@@ -2,6 +2,8 @@
 // Use of this source code is governed by a GPLv3 license that can be found in the LICENSE file.
 
 #include "Settings.h"
+#include "PathRetrace.h"  // PathRetrace plugin
+#include "VizGenerator.h"  // VizGenerator plugin
 #include "Parameters.h"  // global_named_params
 
 #define CRASH_TEST
@@ -1235,6 +1237,10 @@ Error execute_line(const char* line, Channel& channel, AuthenticationLevel auth_
         if (gc_state.skip_blocks) {
             return Error::Ok;
         }
+
+        // PathRetrace + VizGenerator plugin commands
+        if (retrace_handle_command(line)) return Error::Ok;
+        if (viz_handle_command(line)) return Error::Ok;
 
         return settings_execute_line(line, channel, auth_level);
     }
