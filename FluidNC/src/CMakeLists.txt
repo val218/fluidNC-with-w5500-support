@@ -29,6 +29,8 @@ idf_component_register(SRCS BTConfig.cpp
 							Pin.cpp
 							PinMapper.cpp
 							Planner.cpp
+							PathRetrace.cpp
+							VizGenerator.cpp
 							Probe.cpp
 							ProcessSettings.cpp
 							Protocol.cpp
