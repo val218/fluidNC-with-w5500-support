@@ -50,6 +50,13 @@ static void got_ip_handler(void* arg, esp_event_base_t event_base,
 }
 
 void ethernet_init() {
+    // Ensure ESP-NETIF and event loop are initialized before we create netif objects.
+    // WiFiConfig::init() calls us before the Arduino WiFi library has a chance to
+    // call esp_netif_init(). Calling these again is safe — returns ESP_ERR_INVALID_STATE
+    // if already initialized, which we ignore.
+    esp_netif_init();
+    esp_event_loop_create_default();
+
     ESP_LOGI(TAG, "Init W5500 CS=IO%d INT=IO%d SPI=%dMHz prio=%d",
              W5500_CS_GPIO, W5500_INT_GPIO, W5500_SPI_HZ / 1000000, W5500_TASK_PRIO);
 
@@ -80,7 +87,7 @@ void ethernet_init() {
     // NOTE: smi_mdc_gpio_num and smi_mdio_gpio_num were added in IDF 5.x only.
     // DO NOT set them — they do not exist in IDF 4.4.7. Writing to non-existent
     // struct fields corrupts adjacent heap memory and causes a hard fault panic.
-    mac_config.rx_task_stack_size = 4096;
+    mac_config.rx_task_stack_size = 8192;         // 4096 caused stack overflow on large frames
     mac_config.rx_task_prio       = W5500_TASK_PRIO;  // was default 15, now 5
 
     esp_eth_mac_t* mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
@@ -99,17 +106,25 @@ void ethernet_init() {
 
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t* eth_netif = esp_netif_new(&netif_cfg);
+    if (!eth_netif) {
+        ESP_LOGE(TAG, "Netif create failed — netif stack not ready");
+        return;
+    }
     esp_netif_attach(eth_netif, esp_eth_new_netif_glue(s_eth_handle));
 
     esp_event_handler_register(ETH_EVENT,  ESP_EVENT_ANY_ID, &eth_event_handler, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_handler, NULL);
 
-    esp_eth_start(s_eth_handle);
+    if (esp_eth_start(s_eth_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "eth start failed");
+        esp_eth_driver_uninstall(s_eth_handle);
+        s_eth_handle = NULL;
+        return;
+    }
 
-    // FIX: Wait for W5500 to complete hardware reset and SPI initialisation.
-    // During reset, W5500 drives MISO in an undefined state. Any SD card SPI
-    // operation during this window gets corrupted, causing FatFS to unmount.
-    // 500ms is enough for W5500 software reset (datasheet: ~1ms) + margin.
+    // Wait for W5500 hardware reset + SPI init to settle.
+    // During reset W5500 may drive MISO in undefined state — any SD card
+    // transaction in this window gets corrupted and FatFS may unmount.
     vTaskDelay(pdMS_TO_TICKS(500));
 
     ESP_LOGI(TAG, "W5500 init complete");
