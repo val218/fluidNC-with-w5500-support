@@ -1,32 +1,40 @@
-// VizGenerator.cpp — FluidNC 4.0.3: toolpath viz file generator
+// VizGenerator.cpp — FluidNC plugin: toolpath viz file generator
 // ─────────────────────────────────────────────────────────────────────────────
-// Scans a G-code file, extracts XY motion, writes a compact .viz CSV file.
-// Pendant loads it via $File/ShowSome — no new protocol needed.
-// Runs as a background FreeRTOS task, priority 1 (below motion).
+// Scans a G-code file on SD card. Extracts XY motion coordinates.
+// Writes a compact .viz CSV file that the pendant can load via $File/ShowSome.
+//
+// Runs as a background FreeRTOS task on Core 1, priority 1 (below motion).
+// Memory: ~4KB stack + 256B line buffer. No heap allocation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "VizGenerator.h"
-#include "Serial.h"     // allChannels
+
+// FluidNC includes — adjust to match your version
+#include "Report.h"
+#include "Machine/MachineConfig.h"
 #include "System.h"
 
+#include <SD.h>
 #include <cstring>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cctype>
 #include <algorithm>
-#include <string>
 
-#define VIZ_MAX_POINTS    8000
-#define VIZ_SAMPLE_EVERY  3
-#define VIZ_MIN_DIST_MM   0.5f
-#define VIZ_ARC_SEGMENTS  16
+// ── Configuration ────────────────────────────────────────────────────────────
+#define VIZ_MAX_POINTS    8000   // max points in output
+#define VIZ_SAMPLE_EVERY  3      // sample every N motion lines
+#define VIZ_MIN_DIST_MM   0.5f   // skip points closer than this
+#define VIZ_ARC_SEGMENTS  16     // segments per G2/G3 arc
 
+// ── State ────────────────────────────────────────────────────────────────────
 static bool  _viz_busy   = false;
 static float _modal_x = 0, _modal_y = 0, _modal_z = 0;
 static bool  _modal_abs  = true;
 static bool  _modal_inch = false;
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
 static float to_mm(float v) { return _modal_inch ? v * 25.4f : v; }
 
 static bool parse_float(const char** p, float* out) {
@@ -44,30 +52,39 @@ static const char* skip_to_letter(const char* p) {
     return p;
 }
 
+// ── Send message to pendant ──────────────────────────────────────────────────
 static void viz_msg(const char* msg) {
     char buf[128];
     snprintf(buf, sizeof(buf), "[MSG:%s]\r\n", msg);
-    allChannels.print(buf);
+#ifdef GRBL_SEND_AVAILABLE
+    grbl_send(CLIENT_SERIAL, buf);
+#else
+    log_msg(buf);
+#endif
 }
 
-static int write_arc(FILE* f, float x0, float y0, float x1, float y1,
-                     float i, float j, bool cw,
+// ── Arc expansion ────────────────────────────────────────────────────────────
+static int write_arc(File& f, float x0, float y0, float x1, float y1,
+                     float i, float j, bool clockwise,
                      float* xmin, float* xmax, float* ymin, float* ymax,
                      int* count) {
     float cx = x0 + i, cy = y0 + j;
     float r = sqrtf(i*i + j*j);
     if (r < 0.001f) return 0;
+
     float a0 = atan2f(y0 - cy, x0 - cx);
     float a1 = atan2f(y1 - cy, x1 - cx);
-    if (cw) { if (a1 >= a0) a1 -= 2.0f * M_PI; }
-    else    { if (a1 <= a0) a1 += 2.0f * M_PI; }
+    if (clockwise) { if (a1 >= a0) a1 -= 2.0f * M_PI; }
+    else           { if (a1 <= a0) a1 += 2.0f * M_PI; }
+
     int written = 0;
     for (int s = 1; s <= VIZ_ARC_SEGMENTS && *count < VIZ_MAX_POINTS; s++) {
-        float t = (float)s / VIZ_ARC_SEGMENTS;
+        float t   = (float)s / VIZ_ARC_SEGMENTS;
         float ang = a0 + t * (a1 - a0);
-        float px = cx + r * cosf(ang);
-        float py = cy + r * sinf(ang);
-        fprintf(f, "%.3f,%.3f\n", px, py);
+        float px  = cx + r * cosf(ang);
+        float py  = cy + r * sinf(ang);
+        char buf[32]; snprintf(buf, sizeof(buf), "%.3f,%.3f\n", px, py);
+        f.print(buf);
         if (px < *xmin) *xmin = px; if (px > *xmax) *xmax = px;
         if (py < *ymin) *ymin = py; if (py > *ymax) *ymax = py;
         (*count)++; written++;
@@ -75,14 +92,15 @@ static int write_arc(FILE* f, float x0, float y0, float x1, float y1,
     return written;
 }
 
+// ── Core: scan G-code and write .viz ─────────────────────────────────────────
 static bool do_generate(const std::string& nc_path, const std::string& viz_out) {
-    FILE* nc = fopen(nc_path.c_str(), "r");
+    File nc = SD.open(nc_path.c_str(), FILE_READ);
     if (!nc) { viz_msg("VizErr:cannot open nc file"); return false; }
 
     std::string tmp = viz_out + ".tmp";
-    remove(tmp.c_str());
-    FILE* vf = fopen(tmp.c_str(), "w");
-    if (!vf) { fclose(nc); viz_msg("VizErr:cannot write viz file"); return false; }
+    SD.remove(tmp.c_str());
+    File vf = SD.open(tmp.c_str(), FILE_WRITE);
+    if (!vf) { nc.close(); viz_msg("VizErr:cannot write viz file"); return false; }
 
     _modal_x = 0; _modal_y = 0; _modal_z = 0;
     _modal_abs = true; _modal_inch = false;
@@ -91,14 +109,18 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
     int n_points = 0, line_num = 0, sample_ct = 0;
     float last_px = 1e9f, last_py = 1e9f;
 
-    fprintf(vf, "VIZ 00000 +00000.000 +00000.000 +00000.000 +00000.000\n");
+    // Placeholder header — rewritten at end
+    vf.println("VIZ 00000 +00000.000 +00000.000 +00000.000 +00000.000");
 
     char linebuf[256];
-    while (fgets(linebuf, sizeof(linebuf), nc) && n_points < VIZ_MAX_POINTS) {
-        // Strip newline and uppercase
-        int len = strlen(linebuf);
-        while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r')) linebuf[--len] = '\0';
-        for (int i = 0; i < len; i++) linebuf[i] = toupper(linebuf[i]);
+    while (nc.available() && n_points < VIZ_MAX_POINTS) {
+        int len = 0;
+        while (nc.available() && len < (int)sizeof(linebuf) - 1) {
+            char c = nc.read();
+            if (c == '\n' || c == '\r') break;
+            linebuf[len++] = toupper(c);
+        }
+        linebuf[len] = '\0';
         line_num++;
 
         if (line_num % 1000 == 0) {
@@ -128,8 +150,8 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
                     switch ((int)val) {
                         case 0: motion=0; break; case 1: motion=1; break;
                         case 2: motion=2; break; case 3: motion=3; break;
-                        case 20: _modal_inch=true;  break; case 21: _modal_inch=false; break;
-                        case 90: _modal_abs=true;   break; case 91: _modal_abs=false;  break;
+                        case 20: _modal_inch=true; break; case 21: _modal_inch=false; break;
+                        case 90: _modal_abs=true;  break; case 91: _modal_abs=false;  break;
                     } break;
                 case 'X': new_x = _modal_abs ? to_mm(val) : _modal_x + to_mm(val); has_x=true; break;
                 case 'Y': new_y = _modal_abs ? to_mm(val) : _modal_y + to_mm(val); has_y=true; break;
@@ -153,7 +175,8 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
             if (sqrtf(dx*dx + dy*dy) >= VIZ_MIN_DIST_MM || last_px > 1e8f) {
                 if (++sample_ct >= VIZ_SAMPLE_EVERY || last_px > 1e8f) {
                     sample_ct = 0;
-                    fprintf(vf, "%.3f,%.3f\n", new_x, new_y);
+                    char buf[32]; snprintf(buf, sizeof(buf), "%.3f,%.3f\n", new_x, new_y);
+                    vf.print(buf);
                     if (new_x < xmin) xmin = new_x; if (new_x > xmax) xmax = new_x;
                     if (new_y < ymin) ymin = new_y; if (new_y > ymax) ymax = new_y;
                     last_px = new_x; last_py = new_y;
@@ -163,24 +186,32 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         }
         _modal_x = new_x; _modal_y = new_y; _modal_z = new_z;
     }
-    fclose(nc); fclose(vf);
+    nc.close(); vf.close();
 
-    // Rewrite with real header
-    FILE* vf_r = fopen(tmp.c_str(), "r");
-    remove(viz_out.c_str());
-    FILE* vf_w = fopen(viz_out.c_str(), "w");
+    // Rewrite with real header: read temp, write final with proper header
+    File vf_r = SD.open(tmp.c_str(), FILE_READ);
+    SD.remove(viz_out.c_str());
+    File vf_w = SD.open(viz_out.c_str(), FILE_WRITE);
     if (!vf_r || !vf_w) {
-        if (vf_r) fclose(vf_r); if (vf_w) fclose(vf_w);
-        remove(tmp.c_str()); return false;
+        if (vf_r) vf_r.close(); if (vf_w) vf_w.close();
+        SD.remove(tmp.c_str()); return false;
     }
-    fprintf(vf_w, "VIZ %d %.3f %.3f %.3f %.3f\n", n_points, xmin, xmax, ymin, ymax);
+
+    char hdr[64];
+    snprintf(hdr, sizeof(hdr), "VIZ %d %.3f %.3f %.3f %.3f\n",
+             n_points, xmin, xmax, ymin, ymax);
+    vf_w.print(hdr);
+
     // Skip placeholder header
-    char skip[128]; fgets(skip, sizeof(skip), vf_r);
-    // Copy rest
+    while (vf_r.available()) { if (vf_r.read() == '\n') break; }
+
     char copybuf[256];
-    while (fgets(copybuf, sizeof(copybuf), vf_r)) fputs(copybuf, vf_w);
-    fclose(vf_r); fclose(vf_w);
-    remove(tmp.c_str());
+    while (vf_r.available()) {
+        int n = vf_r.read((uint8_t*)copybuf, sizeof(copybuf));
+        if (n > 0) vf_w.write((uint8_t*)copybuf, n);
+    }
+    vf_r.close(); vf_w.close();
+    SD.remove(tmp.c_str());
 
     char done_msg[128];
     snprintf(done_msg, sizeof(done_msg), "VizReady:%s:%d:%.3f:%.3f:%.3f:%.3f",
@@ -189,6 +220,7 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
     return true;
 }
 
+// ── FreeRTOS background task ─────────────────────────────────────────────────
 struct VizTaskArgs { char nc_path[256]; char viz_out[256]; };
 static VizTaskArgs _viz_task_args;
 
@@ -200,20 +232,21 @@ static void viz_task(void* arg) {
     vTaskDelete(nullptr);
 }
 
+// ── Public API ───────────────────────────────────────────────────────────────
 std::string viz_path(const std::string& nc_path) { return nc_path + ".viz"; }
 
 bool viz_exists(const std::string& nc_path) {
-    FILE* f = fopen(viz_path(nc_path).c_str(), "r");
-    if (f) { fclose(f); return true; }
-    return false;
+    return SD.exists(viz_path(nc_path).c_str());
 }
 
 bool viz_generate(const std::string& nc_path) {
     if (_viz_busy) { viz_msg("VizBusy:already generating"); return false; }
     std::string vp = viz_path(nc_path);
     if (viz_exists(nc_path)) {
-        char msg[128]; snprintf(msg, sizeof(msg), "VizReady:%s", vp.c_str());
-        viz_msg(msg); return true;
+        char msg[128];
+        snprintf(msg, sizeof(msg), "VizReady:%s", vp.c_str());
+        viz_msg(msg);
+        return true;
     }
     strncpy(_viz_task_args.nc_path, nc_path.c_str(), sizeof(_viz_task_args.nc_path)-1);
     strncpy(_viz_task_args.viz_out, vp.c_str(), sizeof(_viz_task_args.viz_out)-1);
@@ -226,12 +259,13 @@ bool viz_handle_command(const char* line) {
     const char* cmd = line + 5;
     if (strncmp(cmd, "Generate=", 9) == 0) { viz_generate(cmd + 9); return true; }
     if (strncmp(cmd, "Delete=", 7) == 0) {
-        remove(viz_path(cmd + 7).c_str());
+        SD.remove(viz_path(cmd + 7).c_str());
         viz_msg("VizDeleted"); return true;
     }
     if (strncmp(cmd, "Status=", 7) == 0) {
         bool exists = viz_exists(cmd + 7);
-        char msg[128]; snprintf(msg, sizeof(msg), "VizStatus:%s:%s", cmd + 7, exists ? "ready" : "missing");
+        char msg[128];
+        snprintf(msg, sizeof(msg), "VizStatus:%s:%s", cmd + 7, exists ? "ready" : "missing");
         viz_msg(msg); return true;
     }
     return false;
