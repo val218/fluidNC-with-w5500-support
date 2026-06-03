@@ -77,8 +77,9 @@ void ethernet_init() {
     w5500_config.int_gpio_num = W5500_INT_GPIO;  // interrupt-driven (not polling)
 
     eth_mac_config_t mac_config   = ETH_MAC_DEFAULT_CONFIG();
-    mac_config.smi_mdc_gpio_num   = -1;           // not used for SPI Ethernet
-    mac_config.smi_mdio_gpio_num  = -1;
+    // NOTE: smi_mdc_gpio_num and smi_mdio_gpio_num were added in IDF 5.x only.
+    // DO NOT set them — they do not exist in IDF 4.4.7. Writing to non-existent
+    // struct fields corrupts adjacent heap memory and causes a hard fault panic.
     mac_config.rx_task_stack_size = 4096;
     mac_config.rx_task_prio       = W5500_TASK_PRIO;  // was default 15, now 5
 
