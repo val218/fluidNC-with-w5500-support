@@ -16,6 +16,7 @@
 #include <cctype>
 #include <algorithm>
 #include <string>
+#include <cerrno>
 
 #define VIZ_MAX_POINTS    8000
 #define VIZ_SAMPLE_EVERY  3
@@ -76,8 +77,24 @@ static int write_arc(FILE* f, float x0, float y0, float x1, float y1,
 }
 
 static bool do_generate(const std::string& nc_path, const std::string& viz_out) {
+    // Try path as given, then with /sd prefix, then without /sd prefix
     FILE* nc = fopen(nc_path.c_str(), "r");
-    if (!nc) { viz_msg("VizErr:cannot open nc file"); return false; }
+    if (!nc && nc_path.find("/sd") != 0) {
+        // Try adding /sd prefix
+        std::string with_sd = "/sd/" + nc_path;
+        nc = fopen(with_sd.c_str(), "r");
+    }
+    if (!nc && nc_path.find("/sd/") == 0) {
+        // Try stripping /sd/ prefix (relative path)
+        std::string without_sd = nc_path.substr(4);
+        nc = fopen(without_sd.c_str(), "r");
+    }
+    if (!nc) {
+        char errmsg[128];
+        snprintf(errmsg, sizeof(errmsg), "VizErr:cannot open:%s", nc_path.c_str());
+        viz_msg(errmsg);
+        return false;
+    }
 
     std::string tmp = viz_out + ".tmp";
     remove(tmp.c_str());
@@ -189,17 +206,6 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
     return true;
 }
 
-struct VizTaskArgs { char nc_path[256]; char viz_out[256]; };
-static VizTaskArgs _viz_task_args;
-
-static void viz_task(void* arg) {
-    VizTaskArgs* a = (VizTaskArgs*)arg;
-    _viz_busy = true;
-    do_generate(a->nc_path, a->viz_out);
-    _viz_busy = false;
-    vTaskDelete(nullptr);
-}
-
 std::string viz_path(const std::string& nc_path) { return nc_path + ".viz"; }
 
 bool viz_exists(const std::string& nc_path) {
@@ -215,9 +221,11 @@ bool viz_generate(const std::string& nc_path) {
         char msg[128]; snprintf(msg, sizeof(msg), "VizReady:%s", vp.c_str());
         viz_msg(msg); return true;
     }
-    strncpy(_viz_task_args.nc_path, nc_path.c_str(), sizeof(_viz_task_args.nc_path)-1);
-    strncpy(_viz_task_args.viz_out, vp.c_str(), sizeof(_viz_task_args.viz_out)-1);
-    xTaskCreatePinnedToCore(viz_task, "viz_gen", 8192, &_viz_task_args, 1, nullptr, 1);
+    // Run synchronously on calling task — avoids FatFS mutex contention
+    // that occurs when using a background FreeRTOS task on IDF 4.4.x
+    _viz_busy = true;
+    do_generate(nc_path, vp);
+    _viz_busy = false;
     return true;
 }
 

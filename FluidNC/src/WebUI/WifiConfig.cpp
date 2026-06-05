@@ -37,12 +37,6 @@
 void init() {
 #ifdef ENABLE_ETHERNET
     ethernet_init();
-    // Remount SD card if ethernet init corrupted its SPI state
-#    ifdef MAX_N_SDCARD
-    if (config && config->_sdCard) {
-        config->_sdCard->init();
-    }
-#    endif
 #endif
 
 #    define tcpip_adapter_dhcp_status_t esp_netif_dhcp_status_t
@@ -1007,12 +1001,6 @@ namespace WebUI {
         void init() {
 #ifdef ENABLE_ETHERNET
     ethernet_init();
-    // Remount SD card — W5500 init can corrupt in-flight SPI transactions
-#    ifdef MAX_N_SDCARD
-    if (config && config->_sdCard) {
-        config->_sdCard->init();
-    }
-#    endif
 #endif
             _sta_ssid    = new StringSetting("Station SSID", WEBSET, WA, "ESP100", "Sta/SSID", "", MIN_SSID_LENGTH, MAX_SSID_LENGTH);
             _hostname    = new HostnameSetting("Hostname", "ESP112", "Hostname", "fluidnc");
