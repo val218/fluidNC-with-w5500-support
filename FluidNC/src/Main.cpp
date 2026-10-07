@@ -24,6 +24,8 @@
 #    include "Driver/localfs.h"
 
 #    include "ToolChangers/atc.h"
+#    include "PathRetrace.h"   // PathRetrace plugin (TabUI pendant)
+#    include "VizGenerator.h"  // VizGenerator plugin (TabUI pendant)
 
 #    include <Arduino.h>
 
@@ -158,6 +160,10 @@ void setup() {
         }
 
         make_proxies();
+
+        // PathRetrace + VizGenerator plugin init (TabUI pendant)
+        retrace_init();
+        viz_init();
 
     } catch (std::exception& ex) {
         // Log exception:

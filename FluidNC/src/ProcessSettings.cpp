@@ -2,6 +2,8 @@
 // Use of this source code is governed by a GPLv3 license that can be found in the LICENSE file.
 
 #include "Settings.h"
+#include "PathRetrace.h"   // PathRetrace plugin (TabUI pendant)
+#include "VizGenerator.h"  // VizGenerator plugin (TabUI pendant)
 #include "Parameters.h"  // global_named_params
 
 #define CRASH_TEST
@@ -1344,6 +1346,26 @@ Error execute_line(const char* line, Channel& channel, AuthenticationLevel auth_
     }
     if (line[0] == 0) {
         return Error::Ok;
+    }
+
+    // PathRetrace / VizGenerator plugin commands (TabUI pendant).
+    // 4.0.x ran every '$' line on one task; 4.1.x splits a polling task and a
+    // protocol task.  These handlers issue gcode/jogs and do long synchronous
+    // file scans, so run them on the protocol task when no job is running
+    // (defer like any other line).  While a job is active (e.g. paused in
+    // Hold) the protocol task is tied up by the job, so - as in 4.0.x - run
+    // them directly instead of rejecting them as "another interface busy".
+    if (strncmp(line, "$Retrace/", 9) == 0 || strncmp(line, "$Viz/", 5) == 0) {
+        if (!on_protocol_task && !Job::channel()) {
+            return cmd_queue_defer(line, channel) ? Error::Deferred : Error::AnotherInterfaceBusy;
+        }
+        if (gc_state.skip_blocks) {
+            return Error::Ok;
+        }
+        if (retrace_handle_command(line) || viz_handle_command(line)) {
+            return Error::Ok;
+        }
+        // Unknown $Retrace/ or $Viz/ subcommand: fall through to normal handling
     }
 
     bool needs_context = line_needs_protocol_context(line);
