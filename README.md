@@ -1,3 +1,5 @@
+> **W5500 Ethernet build:** see [W5500_ETHERNET.md](W5500_ETHERNET.md) for wiring, config, Ethernet setup and connecting gSender over the network.
+
 <img src="https://github.com/bdring/FluidNC/wiki/images/logos/FluidNC.svg" width="600">
 
 ## Introduction
