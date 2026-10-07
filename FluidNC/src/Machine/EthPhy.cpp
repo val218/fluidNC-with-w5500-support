@@ -9,8 +9,68 @@
 #    include "Assertion.h"
 
 #    include <ETH.h>
+#    include <driver/spi_master.h>
+#    include <driver/gpio.h>
+#    include "NutsBolts.h"  // delay_ms, to_hex
 
 namespace Machine {
+    // Read the W5500 VERSIONR register (common block, address 0x0039) directly
+    // over SPI, before handing the chip to the Arduino/IDF driver.  A healthy
+    // W5500 always returns 0x04.  When ETH.begin() fails it only says "init
+    // failed"; this tells us whether the chip answers at all, which separates
+    // wiring/power/clock problems from driver problems.
+    // Returns the byte read, or -1 if the SPI transaction itself failed.
+    static int w5500ReadVersion(int csPin) {
+        spi_device_interface_config_t dev = {};
+        dev.mode                          = 0;
+        dev.clock_speed_hz                = 1000000;  // slow and forgiving for a probe
+        dev.spics_io_num                  = csPin;
+        dev.queue_size                    = 1;
+
+        spi_device_handle_t handle;
+        if (spi_bus_add_device(SPI2_HOST, &dev, &handle) != ESP_OK) {
+            return -1;
+        }
+        // W5500 frame: 16-bit address, control byte (BSB=0 common, read, VDM),
+        // then one data byte clocked out by the chip.
+        spi_transaction_t t = {};
+        t.flags             = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
+        t.length            = 32;
+        t.tx_data[0]        = 0x00;
+        t.tx_data[1]        = 0x39;
+        t.tx_data[2]        = 0x00;
+        t.tx_data[3]        = 0x00;
+        esp_err_t err       = spi_device_polling_transmit(handle, &t);
+        spi_bus_remove_device(handle);
+        return err == ESP_OK ? int(t.rx_data[3]) : -1;
+    }
+
+    static void w5500Diagnose(int csPin, int rstPin) {
+        if (rstPin >= 0) {
+            // Make sure the chip is out of reset for the probe.
+            gpio_set_direction(gpio_num_t(rstPin), GPIO_MODE_OUTPUT);
+            gpio_set_level(gpio_num_t(rstPin), 0);
+            delay_ms(2);
+            gpio_set_level(gpio_num_t(rstPin), 1);
+            delay_ms(60);
+        }
+        int v = w5500ReadVersion(csPin);
+        if (v == 0x04) {
+            log_info("W5500 probe: VERSIONR=0x04 (chip answers on SPI)");
+        } else if (v < 0) {
+            log_error("W5500 probe: SPI transaction failed (bus not initialised?)");
+        } else if (v == 0x00) {
+            log_error("W5500 probe: VERSIONR=0x00 - MISO held low. Chip unpowered, held in reset (RSTn low),"
+                      " no 25MHz clock, or MISO shorted to GND");
+        } else if (v == 0xFF) {
+            log_error("W5500 probe: VERSIONR=0xFF - nothing drives MISO. Check CS/SCK/MOSI/MISO wiring and"
+                      " soldering, 3.3V supply, and that RSTn is high");
+        } else {
+            log_error("W5500 probe: VERSIONR=0x" << to_hex(uint32_t(v)) << " (expected 0x04) - corrupted SPI:"
+                      " bad joint, swapped MOSI/MISO, noise, or wrong SPI mode");
+        }
+    }
+
     const EnumItem EthPhy::phyTypes[] = {
         { EthPhy::W5500, "w5500" },
         { EthPhy::KSZ8851, "ksz8851" },
@@ -79,6 +139,10 @@ namespace Machine {
         pinnum_t sckPin  = config->_spi->_sck.getNative(Pin::Capabilities::Output | Pin::Capabilities::Native);
         pinnum_t mosiPin = config->_spi->_mosi.getNative(Pin::Capabilities::Output | Pin::Capabilities::Native);
         pinnum_t misoPin = config->_spi->_miso.getNative(Pin::Capabilities::Input | Pin::Capabilities::Native);
+
+        if (_phy_type == W5500) {
+            w5500Diagnose(int(csPin), rstPin);
+        }
 
         bool ok = ETH.begin(arduinoPhyType(_phy_type),
                             _phy_addr,
