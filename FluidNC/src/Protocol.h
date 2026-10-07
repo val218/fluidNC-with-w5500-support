@@ -51,6 +51,13 @@ extern volatile bool rtCycleStop;
 
 extern volatile bool runLimitLoop;
 
+// Set by protocol_do_late_reset() (and similar) for polling_loop() to consume
+// by aborting whatever job was running at the time. Job::nest() clears it
+// when starting a fresh job stack, so a job that did not exist yet when the
+// flag was raised - e.g. the after_reset macro that the same reset queues -
+// does not inherit it (FluidNC issue #1861).
+extern volatile const char* unwind_cause;
+
 #include <map>
 extern const std::map<ExecAlarm, const char*> AlarmNames;
 
@@ -115,4 +122,16 @@ void protocol_send_event_from_ISR(const Event* evt, void* arg = 0);
 
 void drain_messages();
 
+// If called on the polling task (the message_queue drainer), dequeue and ship
+// one queued log message immediately and return true; otherwise a no-op that
+// returns false.  enqueue_log_message() uses this so a log burst from the
+// polling task itself cannot block forever on a full queue.
+bool poll_task_drain_one_message();
+
+// Copy a line onto cmd_queue for protocol_main_loop to execute.  Returns false
+// if the queue is full.  Called by execute_line() on the polling task.
+class Channel;
+bool cmd_queue_defer(const char* line, Channel& channel);
+
 extern uint32_t heapLowWater;
+extern uint32_t maxBlockLowWater;  // largest-free-block low-water; UINT_MAX where unavailable

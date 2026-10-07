@@ -88,6 +88,14 @@ namespace Machine {
             return;
         }
 
+        // Rearm limit switches before checking them in pulloff phases
+        // This allows inactive events to clear the limit bits
+        if (_phase == Pulloff0 || _phase == Pulloff1 || _phase == Pulloff2) {
+            config->_kinematics->rearmLimits(_phaseAxes, _phaseMotors);
+        }
+
+        mc_dwell(10);  // Run the protocol loop to handle switch events after rearm
+
         // Cycle stop in pulloff is success unless
         // the limit switches are still active.
         if (limited() & _phaseMotors) {
@@ -117,6 +125,14 @@ namespace Machine {
         }
 
         log_debug("Homing nextPhase " << phaseName(_phase));
+
+        // Tell the motors which approach phase is active so that drivers
+        // with phase-dependent settings (e.g. Trinamic StallGuard
+        // thresholds) can retune for the seek vs feed rate.
+        if (_phase == FastApproach || _phase == SlowApproach) {
+            Axes::set_homing_phase(_cycleAxes, _phase == FastApproach);
+        }
+
         if (_phase == CycleDone || (_phase == Phase::Pulloff2 && !needsPulloff2(_cycleMotors))) {
             set_mpos();
             nextCycle();

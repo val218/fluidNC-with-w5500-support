@@ -2,16 +2,29 @@
 #include <ESPAsyncWebServer.h>
 
 #include <AsyncTCP.h>
-#include "ESP32SHA1.h"
 
-#include <chrono>
-#include <ctime>
-// #include <format>
+#include <algorithm>
+#include <functional>
+#include <memory>
+#include <vector>
 #include "string_util.h"
+
+// Real per-file modification times in PROPFIND responses.  Disabled: it needs
+// <chrono>/<ctime> (and ideally <format>), and <chrono> alone pulls libstdc++
+// <sstream>/<locale> in - std::ostringstream, std::put_time and the
+// time_put/__timepunct/numpunct facet caches, ~4 KB of DRAM.  Define
+// ACTUAL_FILE_TIME to build the real implementation in propfind_time_string().
+// #define ACTUAL_FILE_TIME
+#ifdef ACTUAL_FILE_TIME
+#    include <chrono>
+#    include <ctime>
+// #    include <format>
+#endif
 
 #include "WebDAV.h"
 #include "FileStream.h"
 #include "HashFS.h"
+#include "Driver/watchdog.h"  // WatchdogSuspend
 
 #include "Mime.h"
 
@@ -30,6 +43,291 @@ bool WebDAV::canHandle(AsyncWebServerRequest* request) const {
 static const char* rootname = "/";
 static const char* slashstr = "/";
 static const char  slash    = '/';
+
+namespace {
+    struct PropfindNodeFrame {
+        enum class Stage : uint8_t { Enter, EmitMacMetadata, IterateChildren };
+
+        explicit PropfindNodeFrame(stdfs::path node_path, int remaining_depth) : path(std::move(node_path)), level(remaining_depth) {}
+
+        stdfs::path               path;
+        std::string               display_name;
+        std::string               timestr;
+        int32_t                   size            = -1;
+        int                       level           = 0;
+        bool                      is_dir          = false;
+        bool                      initialized     = false;
+        bool                      iter_initialized = false;
+        Stage                     stage           = Stage::Enter;
+        stdfs::directory_iterator iter;
+        stdfs::directory_iterator end;
+    };
+
+    struct PropfindChunkState {
+        enum class Phase : uint8_t { Start, Traverse, End, Done };
+
+        PropfindChunkState(FluidPath                                      root,
+                   bool                                           want_json_response,
+                           bool                                           is_macos_request,
+                           std::function<stdfs::path(const stdfs::path&)> replace_fs_name_fn,
+                           std::function<bool(const stdfs::path&)>        is_fs_root_fn) :
+            root_path(std::move(root)),
+            want_json(want_json_response),
+            is_macos(is_macos_request),
+            replace_fs_name(std::move(replace_fs_name_fn)),
+            is_fs_root(std::move(is_fs_root_fn)) {
+            if (want_json) {
+                encoder = std::make_unique<JSONencoder>([this](const char* s) { pending += s; });
+            }
+        }
+
+        Phase                                             phase          = Phase::Start;
+        FluidPath                                         root_path;
+        bool                                              want_json      = false;
+        bool                                              is_macos       = false;
+        std::string                                       pending;
+        size_t                                            pending_offset = 0;
+        std::vector<PropfindNodeFrame>                    stack;
+        std::unique_ptr<JSONencoder>                      encoder;
+        std::function<stdfs::path(const stdfs::path&)>    replace_fs_name;
+        std::function<bool(const stdfs::path&)>           is_fs_root;
+    };
+
+    std::string propfind_time_string(const stdfs::path& fpath) {
+        static const char* const kEpochFallback = "Fri, 05 Sep 2014 19:00:00 GMT";
+
+#ifdef ACTUAL_FILE_TIME
+        std::error_code ec;
+        auto            ftime = stdfs::last_write_time(fpath, ec);
+        if (ec) {
+            return kEpochFallback;
+        }
+#    if defined(__cpp_lib_format)
+        return std::format("{:%c}", ftime);
+#    elif defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
+        // std::chrono::file_clock and to_sys() are C++20.
+        std::time_t cftime  = std::chrono::system_clock::to_time_t(std::chrono::file_clock::to_sys(ftime));
+        std::string timestr = std::asctime(std::localtime(&cftime));
+        timestr.pop_back();  // rm the trailing '\n' put by `asctime`
+        return timestr;
+#    else
+#        error "ACTUAL_FILE_TIME needs C++20 <chrono> (file_clock::to_sys) or std::format; \
+no C++17 file-time -> time_t conversion is implemented here."
+#    endif
+#else
+        (void)fpath;
+        return kEpochFallback;
+#endif
+    }
+
+    void initialize_propfind_frame(PropfindChunkState& state, PropfindNodeFrame& frame) {
+        if (frame.initialized) {
+            return;
+        }
+
+        std::error_code ec;
+        frame.is_dir = stdfs::is_directory(frame.path, ec) && !ec;
+
+        ec = {};
+        auto file_size = frame.is_dir ? static_cast<uintmax_t>(-1) : stdfs::file_size(frame.path, ec);
+        frame.size     = (ec || file_size == static_cast<uintmax_t>(-1)) ? -1 : static_cast<int32_t>(file_size);
+        frame.display_name = state.replace_fs_name(frame.path).string();
+        frame.timestr      = propfind_time_string(frame.path);
+        frame.initialized  = true;
+    }
+
+    std::string xml_escape(std::string_view text) {
+        std::string escaped;
+        escaped.reserve(text.size());
+
+        for (char ch : text) {
+            switch (ch) {
+                case '&':
+                    escaped += "&amp;";
+                    break;
+                case '<':
+                    escaped += "&lt;";
+                    break;
+                case '>':
+                    escaped += "&gt;";
+                    break;
+                case '\"':
+                    escaped += "&quot;";
+                    break;
+                case '\'':
+                    escaped += "&apos;";
+                    break;
+                default:
+                    escaped += ch;
+                    break;
+            }
+        }
+
+        return escaped;
+    }
+
+    void append_propfind_xml_response(PropfindChunkState& state, const PropfindNodeFrame& frame) {
+        auto escaped_name = xml_escape(frame.display_name);
+
+        state.pending += "<d:response>";
+        state.pending += "<d:href>";
+        state.pending += escaped_name;
+        state.pending += "</d:href>";
+        state.pending += "<d:propstat>";
+        state.pending += "<d:prop>";
+        if (frame.is_dir) {
+            state.pending += "<d:resourcetype><d:collection/></d:resourcetype>";
+        } else {
+            state.pending += "<d:getlastmodified>";
+            state.pending += xml_escape(frame.timestr);
+            state.pending += "</d:getlastmodified>";
+            state.pending += "<d:resourcetype/>";
+            state.pending += "<d:getcontentlength>";
+            state.pending += std::to_string(frame.size);
+            state.pending += "</d:getcontentlength>";
+            state.pending += "<d:getcontenttype>";
+            state.pending += xml_escape(getContentType(frame.display_name.c_str()));
+            state.pending += "</d:getcontenttype>";
+        }
+        state.pending += "</d:prop>";
+        state.pending += "<d:status>HTTP/1.1 200 OK</d:status>";
+        state.pending += "</d:propstat>";
+        state.pending += "</d:response>";
+    }
+
+    void append_macos_metadata_response(PropfindChunkState& state, const PropfindNodeFrame& frame) {
+        PropfindNodeFrame metadata_frame(frame.path / ".metadata_never_index", 0);
+        metadata_frame.display_name = state.replace_fs_name(metadata_frame.path).string();
+        metadata_frame.timestr      = frame.timestr;
+        metadata_frame.size         = 0;
+        metadata_frame.initialized  = true;
+        append_propfind_xml_response(state, metadata_frame);
+    }
+
+    void initialize_propfind_iterator(PropfindNodeFrame& frame) {
+        if (frame.iter_initialized) {
+            return;
+        }
+
+        std::error_code ec;
+        frame.iter = stdfs::directory_iterator { frame.path, ec };
+        if (ec) {
+            frame.iter = frame.end;
+        }
+        frame.iter_initialized = true;
+    }
+
+    bool advance_propfind_json_chunk(PropfindChunkState& state) {
+        auto& frame = state.stack.back();
+        initialize_propfind_frame(state, frame);
+
+        switch (frame.stage) {
+            case PropfindNodeFrame::Stage::Enter:
+                state.encoder->begin_object();
+                state.encoder->member("name", frame.display_name);
+                state.encoder->member("size", frame.size);
+                state.encoder->member("datetime", frame.timestr);
+                if (frame.is_dir && frame.level > 0) {
+                    state.encoder->begin_array("files");
+                    frame.stage = PropfindNodeFrame::Stage::IterateChildren;
+                } else {
+                    state.encoder->end_object();
+                    state.stack.pop_back();
+                }
+                state.encoder->flush();
+                return true;
+
+            case PropfindNodeFrame::Stage::EmitMacMetadata:
+                state.stack.back().stage = PropfindNodeFrame::Stage::IterateChildren;
+                return true;
+
+            case PropfindNodeFrame::Stage::IterateChildren:
+                initialize_propfind_iterator(frame);
+                if (frame.iter == frame.end) {
+                    state.encoder->end_array();
+                    state.encoder->end_object();
+                    state.stack.pop_back();
+                    state.encoder->flush();
+                } else {
+                    stdfs::path child_path = frame.iter->path();
+                    ++frame.iter;
+                    state.stack.emplace_back(std::move(child_path), frame.level - 1);
+                }
+                return true;
+        }
+
+        return false;
+    }
+
+    bool advance_propfind_xml_chunk(PropfindChunkState& state) {
+        auto& frame = state.stack.back();
+        initialize_propfind_frame(state, frame);
+
+        switch (frame.stage) {
+            case PropfindNodeFrame::Stage::Enter:
+                append_propfind_xml_response(state, frame);
+                if (frame.is_dir && frame.level > 0) {
+                    frame.stage = state.is_macos && state.is_fs_root(frame.path) ? PropfindNodeFrame::Stage::EmitMacMetadata :
+                                                                                PropfindNodeFrame::Stage::IterateChildren;
+                } else {
+                    state.stack.pop_back();
+                }
+                return true;
+
+            case PropfindNodeFrame::Stage::EmitMacMetadata:
+                append_macos_metadata_response(state, frame);
+                frame.stage = PropfindNodeFrame::Stage::IterateChildren;
+                return true;
+
+            case PropfindNodeFrame::Stage::IterateChildren:
+                initialize_propfind_iterator(frame);
+                if (frame.iter == frame.end) {
+                    state.stack.pop_back();
+                } else {
+                    stdfs::path child_path = frame.iter->path();
+                    ++frame.iter;
+                    state.stack.emplace_back(std::move(child_path), frame.level - 1);
+                }
+                return true;
+        }
+
+        return false;
+    }
+
+    bool advance_propfind_chunk(PropfindChunkState& state) {
+        switch (state.phase) {
+            case PropfindChunkState::Phase::Start:
+                if (state.want_json) {
+                    state.encoder->flush();
+                } else {
+                    state.pending += "<?xml version=\"1.0\"?>";
+                    state.pending += "<d:multistatus xmlns:d=\"DAV:\">";
+                }
+                state.phase = PropfindChunkState::Phase::Traverse;
+                return true;
+
+            case PropfindChunkState::Phase::Traverse:
+                if (state.stack.empty()) {
+                    state.phase = PropfindChunkState::Phase::End;
+                    return true;
+                }
+                return state.want_json ? advance_propfind_json_chunk(state) : advance_propfind_xml_chunk(state);
+
+            case PropfindChunkState::Phase::End:
+                if (state.want_json) {
+                } else {
+                    state.pending += "</d:multistatus>";
+                }
+                state.phase = PropfindChunkState::Phase::Done;
+                return true;
+
+            case PropfindChunkState::Phase::Done:
+                return false;
+        }
+
+        return false;
+    }
+}
 
 // Mac command to prevent .DS_Store files:
 //  defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool TRUE
@@ -117,7 +415,7 @@ void WebDAV::handleRequest(AsyncWebServerRequest* request) {
             // MacOS tends to create an empty file first, then
             // lock it and write to it.
             FileStream file(fpath, "w", LocalFS);
-        } catch (const Error err) {
+        } catch (const ErrorException& err) {
             log_debug(fpath << " cannot be opened");
             return request->send(403);
         }
@@ -193,7 +491,7 @@ void WebDAV::handleBody(AsyncWebServerRequest* request, unsigned char* data, siz
             // file if it already exists.
             try {
                 state->outFile = new FileStream(fpath, "w", LocalFS);
-            } catch (const Error err) {
+            } catch (const ErrorException& err) {
                 log_debug(fpath << " cannot be opened");
                 return request->send(500);
             }
@@ -240,6 +538,8 @@ bool WebDAV::acceptsType(AsyncWebServerRequest* request, const char* type) {
 }
 
 void WebDAV::handlePropfind(const FluidPath& fpath, DavResource resource, AsyncWebServerRequest* request) {
+    (void)resource;
+
     // check depth header
     auto depth = DavDepth::NONE;
 
@@ -259,34 +559,43 @@ void WebDAV::handlePropfind(const FluidPath& fpath, DavResource resource, AsyncW
             noroot = true;
         }
     }
-
-    JSONencoder* j = nullptr;
-
     bool wantJSON = acceptsType(request, T_application_json);
 
-    AsyncResponseStream* response = request->beginResponseStream(wantJSON ? T_application_json : "application/xml");
+    auto state = std::make_shared<PropfindChunkState>(
+        fpath,
+        wantJSON,
+        _isMacOS,
+        [this](const stdfs::path& path) { return replace_fs_name(path); },
+        [this](const stdfs::path& path) { return is_fs_root(path); });
+    state->stack.emplace_back(fpath, static_cast<int>(depth));
+
+    AsyncWebServerResponse* response = request->beginChunkedResponse(
+        wantJSON ? T_application_json : "application/xml",
+        [state](uint8_t* buffer, size_t maxLen, size_t total) mutable -> size_t {
+            (void)total;
+
+            size_t written = 0;
+
+            while (written < maxLen) {
+                if (state->pending_offset < state->pending.length()) {
+                    size_t chunk_len = std::min(maxLen - written, state->pending.length() - state->pending_offset);
+                    memcpy(buffer + written, state->pending.data() + state->pending_offset, chunk_len);
+                    state->pending_offset += chunk_len;
+                    written += chunk_len;
+                    continue;
+                }
+
+                state->pending.clear();
+                state->pending_offset = 0;
+
+                if (!advance_propfind_chunk(*state)) {
+                    break;
+                }
+            }
+
+            return written;
+        });
     response->setCode(207);
-
-    if (wantJSON) {
-        j = new JSONencoder([response](const char* s) { response->print(s); });
-    }
-
-    if (j) {
-        j->begin();
-    } else {
-        response->print("<?xml version=\"1.0\"?>");
-        response->print("<d:multistatus xmlns:d=\"DAV:\">");
-    }
-    //    if (!is_dir || !noroot) {
-    sendPropResponse(response, (int)depth, fpath, j);
-    //    }
-
-    if (j) {
-        j->end();
-        delete j;
-    } else {
-        response->print("</d:multistatus>");
-    }
 
     return request->send(response);
 }
@@ -302,12 +611,12 @@ void WebDAV::handleGet(const FluidPath& fpath, DavResource resource, AsyncWebSer
             try {
                 file   = new FileStream(gzpath, "r", LocalFS);
                 isGzip = true;
-            } catch (const Error err) {}
+            } catch (const ErrorException& err) {}
         }
     } else {
         try {
             file = new FileStream(fpath, "r", LocalFS);
-        } catch (const Error err) {}
+        } catch (const ErrorException& err) {}
     }
 
     if (!file) {
@@ -353,7 +662,7 @@ void WebDAV::handlePut(
         FileStream file(fpath, index ? "a" : "w", LocalFS);
         file.write(data, len);
         file.flush();
-    } catch (const Error err) { log_debug(fpath << " cannot be opened"); }
+    } catch (const ErrorException& err) { log_debug(fpath << " cannot be opened"); }
 }
 
 void WebDAV::handleLock(const stdfs::path& path, AsyncWebServerRequest* request) {
@@ -372,9 +681,11 @@ void WebDAV::handleLock(const stdfs::path& path, AsyncWebServerRequest* request)
     response->print("<D:locktype><write/></D:locktype>");
     response->print("<D:lockscope><exclusive/></D:lockscope>");
     response->print("<D:locktoken><D:href>urn:uuid:26e57cb3-834d-191a-00de-000042bdecf9</D:href></D:locktoken>");
-    response->printf("<D:lockroot><D:href>%s</D:href></D:lockroot>", lockroot.c_str());
+    response->print("<D:lockroot><D:href>");
+    response->print(lockroot.c_str());
+    response->print("</D:href></D:lockroot>");
     response->print("<D:depth>infinity</D:depth>");
-    response->printf("<D:owner><a:href xmlns:a=\"DAV:\">%s</a:href></D:owner>", "todo");
+    response->print("<D:owner><a:href xmlns:a=\"DAV:\">todo</a:href></D:owner>");
     response->print("<D:timeout>Second-3600</D:timeout>");
     response->print("</D:activelock>");
     response->print("</D:lockdiscovery>");
@@ -441,6 +752,9 @@ void WebDAV::handleDelete(const FluidPath& fpath, DavResource resource, AsyncWeb
     if (resource == DavResource::FILE) {
         okay = stdfs::remove(fpath, ec);
     } else {
+        // remove_all walks the whole tree with no place to feed the watchdog,
+        // and this runs on async_tcp, which AsyncTCP subscribes to it.
+        WatchdogSuspend wdt_off;
         // remove_all returns the number of items that were deleted
         okay = stdfs::remove_all(fpath, ec) != 0;
     }
@@ -511,78 +825,4 @@ stdfs::path WebDAV::replace_fs_name(const stdfs::path& p) {
     }
 
     return new_path;
-}
-
-void WebDAV::sendXMLResponse(
-    AsyncResponseStream* response, bool is_dir, const std::string& name, const std::string& tag, const std::string& time, size_t size) {
-    response->printf("<d:response>");
-    response->printf("<d:href>%s</d:href>", name.c_str());
-    response->printf("<d:propstat>");
-    response->printf("<d:prop>");
-    if (is_dir) {
-        response->printf("<d:resourcetype><d:collection/></d:resourcetype>");
-    } else {
-        // response->printf("<d:getetag>%s</d:getetag>", tag.c_str());
-        response->printf("<d:getlastmodified>%s</d:getlastmodified>", time.c_str());
-        response->printf("<d:resourcetype/>");
-        response->printf("<d:getcontentlength>%d</d:getcontentlength>", size);
-        response->printf("<d:getcontenttype>%s</d:getcontenttype>", getContentType(name));
-    }
-    response->printf("</d:prop>");
-    response->printf("<d:status>HTTP/1.1 200 OK</d:status>");
-    response->printf("</d:propstat>");
-    response->printf("</d:response>");
-}
-void WebDAV::sendPropResponse(AsyncResponseStream* response, int level, const stdfs::path& fpath, JSONencoder* j) {
-    auto   ftime  = stdfs::last_write_time(fpath);
-    bool   is_dir = stdfs::is_directory(fpath);
-    size_t size   = is_dir ? -1 : stdfs::file_size(fpath);
-
-    // last modified
-#if __cpp_lib_format
-    std::string timestr = std::format("{:%c}", ftime);
-#else
-#    if 0
-    std::time_t cftime  = std::chrono::system_clock::to_time_t(std::chrono::file_clock::to_sys(ftime));
-    std::string timestr = std::asctime(std::localtime(&cftime));
-    timestr.pop_back();  // rm the trailing '\n' put by `asctime`
-#    else
-    std::string timestr = "Fri, 05 Sep 2014 19:00:00 GMT";
-#    endif
-#endif
-
-    if (j) {
-        j->begin_object();
-        j->member("name", replace_fs_name(fpath));
-        // j->member("shortname", fullPath);
-        j->member("size", is_dir ? -1 : size);
-        j->member("datetime", timestr);
-        if (is_dir && level--) {
-            j->begin_array("files");
-            std::error_code ec;
-            auto            iter = stdfs::directory_iterator { fpath, ec };
-            for (auto const& dirent : iter) {
-                sendPropResponse(response, level, dirent.path(), j);
-            }
-            j->end_array();
-        }
-        j->end_object();
-    } else {
-        // send response
-        std::string tag(fpath.string() + timestr);
-
-        sendXMLResponse(response, is_dir, replace_fs_name(fpath).string(), tag, timestr, size);
-
-        if (is_dir && level--) {
-            if (_isMacOS && is_fs_root(fpath)) {
-                auto mni = fpath / ".metadata_never_index";
-                sendXMLResponse(response, false, replace_fs_name(mni).string(), "", timestr, 0);
-            }
-            std::error_code ec;
-            auto            iter = stdfs::directory_iterator { fpath, ec };
-            for (auto const& dirent : iter) {
-                sendPropResponse(response, level, dirent.path(), j);
-            }
-        }
-    }
 }

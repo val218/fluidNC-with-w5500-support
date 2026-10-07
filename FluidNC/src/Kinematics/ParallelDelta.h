@@ -40,7 +40,7 @@ namespace Kinematics {
         //bool soft_limit_error_exists(float* cartesian) override;
         bool         kinematics_homing(AxisMask& axisMask) override;
         virtual void constrain_jog(float* cartesian, plan_line_data_t* pl_data, float* position) override;
-        virtual bool invalid_line(float* cartesian) override;
+        virtual bool invalid_line(float* cartesian, plan_line_data_t* pl_data) override;
         virtual bool invalid_arc(float*            target,
                                  plan_line_data_t* pl_data,
                                  float*            position,
@@ -73,9 +73,7 @@ namespace Kinematics {
         float _kinematic_segment_len_mm = 1.0;  // the maximum segment length the move is broken into
         bool  _use_servos               = false;  // servo use a special homing
 
-        float _homing_degrees = 0.0;
-        float _up_degrees     = -30.0;
-        float _down_degrees   = 90.0;
+        float _up_degrees = -30.0;
 
         float _last_motor_pos[MAX_N_AXIS] = { 0 };
         float _mpos_offset[3]             = { 0 };
@@ -83,7 +81,7 @@ namespace Kinematics {
         bool delta_calcAngleYZ(float x0, float y0, float z0, float& theta);
 
         void motorVector(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, float* target, float& rate, uint32_t& settle_ms);
-        void homing_move(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) override;
+        void homing_move(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, uint32_t& settling_ms) override;
         void set_homed_mpos(float* mpos) override;
         bool limitReached(AxisMask& axisMask, MotorMask& motors, MotorMask limited) override;
 

@@ -13,6 +13,7 @@ idf_component_register(SRCS BTConfig.cpp
 							FluidPath.cpp
 							GCode.cpp
 							HashFS.cpp
+                            SHA256.cpp
 							InputFile.cpp
 							Job.cpp
 							Jog.cpp
@@ -29,8 +30,6 @@ idf_component_register(SRCS BTConfig.cpp
 							Pin.cpp
 							PinMapper.cpp
 							Planner.cpp
-							PathRetrace.cpp
-							VizGenerator.cpp
 							Probe.cpp
 							ProcessSettings.cpp
 							Protocol.cpp
@@ -90,6 +89,7 @@ idf_component_register(SRCS BTConfig.cpp
 							Motors/Dynamixel2.cpp
 							Motors/MotorDriver.cpp
 							Motors/NullMotor.cpp
+							Motors/PwmServo.cpp
 							Motors/RcServo.cpp
 							Motors/Servo.cpp
 							Motors/Solenoid.cpp
@@ -105,6 +105,7 @@ idf_component_register(SRCS BTConfig.cpp
 							Motors/TrinamicBase.cpp
 							Motors/TrinamicSpiDriver.cpp
 							Motors/TrinamicUartDriver.cpp
+							Motors/UnipolarMotor.cpp
 							Pins/ChannelPinDetail.cpp
 							Pins/DebugPinDetail.cpp
 							Pins/ErrorPinDetail.cpp

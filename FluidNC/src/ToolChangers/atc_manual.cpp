@@ -4,7 +4,6 @@
 #include "atc_manual.h"
 #include "Machine/MachineConfig.h"
 #include <cstdio>
-#include <iostream>
 
 /*
   Use G53 for all moves. This will make it save from G90 vs G91 mode. This only works in the G17 (XY). It will give a spindle alarm in other planes.
@@ -49,9 +48,10 @@ namespace ATCs {
 
     void Manual_ATC::probe_notification() {}
 
-    bool Manual_ATC::tool_change(tool_t new_tool, bool pre_select, bool set_tool) {
-        bool spindle_was_on = false;  // used to restore the spindle state
-        bool was_inch_mode  = false;  // allows use to restore inch mode if req'd
+    bool Manual_ATC::tool_change(tool_t new_tool, bool pre_select, bool set_tool, Channel* channel) {
+        bool spindle_was_on       = (gc_state.modal.spindle != SpindleState::Disable);   // used to restore the spindle state
+        bool was_inch_mode        = (gc_state.modal.units == Units::Inches);             // allows use to restore inch mode if req'd
+        bool was_incremental_mode = (gc_state.modal.distance == Distance::Incremental);  // was G91 active
 
         protocol_buffer_synchronize();  // wait for all motion to complete
         _macro.erase();                 // clear previous gcode
@@ -62,8 +62,7 @@ namespace ATCs {
             if (new_tool == 0) {
                 reset();  // clear TLO
             }
-            _macro.run(nullptr);
-            return true;
+            return _macro.run(channel, true);
         }
 
         // M6T0 is used to reset this ATC and allow us to start a new job
@@ -72,11 +71,8 @@ namespace ATCs {
             move_to_safe_z();
             move_to_change_location();
             reset();
-            _macro.run(nullptr);
-            return true;
+            return _macro.run(channel, true);
         }
-
-        was_inch_mode = (gc_state.modal.units == Units::Inches);
 
         if (gc_state.modal.plane_select != Plane::XY) {
             log_error("This ATC only works in G17 (XY) mode");
@@ -97,23 +93,21 @@ namespace ATCs {
                 if (was_inch_mode) {
                     _macro.addf("G20");
                 }
-                _macro.run(nullptr);
                 _prev_tool = new_tool;
-                return true;
+                return _macro.run(channel, true);
             }
 
             _prev_tool = new_tool;
 
             // save current location, so we can return after the tool change.
-            _macro.addf("#<start_x >= #<_abs_x>");
-            _macro.addf("#<start_y >= #<_abs_y>");
-            _macro.addf("#<start_z >= #<_abs_z>");
+            _macro.addf("#<start_x >= #<_x>");
+            _macro.addf("#<start_y >= #<_y>");
+            _macro.addf("#<start_z >= #<_z>");
 
             move_to_safe_z();
 
             // turn off the spindle
-            if (gc_state.modal.spindle != SpindleState::Disable) {
-                spindle_was_on = true;
+            if (spindle_was_on) {
                 _macro.addf("M5");
             }
 
@@ -143,8 +137,9 @@ namespace ATCs {
             move_to_safe_z();
 
             // return to location before the tool change
-            _macro.addf("G53G0X#<start_x>Y#<start_y>");
-            _macro.addf("G53G0Z#<start_z>");
+            _macro.addf("G90");
+            _macro.addf("G0X#<start_x>Y#<start_y>");
+            _macro.addf("G0Z#<start_z>");
 
             if (spindle_was_on) {
                 _macro.addf("M3");  // spindle should handle spinup delay
@@ -154,9 +149,11 @@ namespace ATCs {
                 _macro.addf("G20");
             }
 
-            _macro.run(nullptr);
+            if (was_incremental_mode) {
+                _macro.addf("G91");
+            }
 
-            return true;
+            return _macro.run(channel, true);
         } catch (...) { log_info("Exception caught"); }
 
         return false;

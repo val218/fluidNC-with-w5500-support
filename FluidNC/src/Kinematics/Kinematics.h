@@ -42,7 +42,7 @@ namespace Kinematics {
         bool transform_cartesian_to_motors(float* motors, float* cartesian);
 
         void constrain_jog(float* target, plan_line_data_t* pl_data, float* position);
-        bool invalid_line(float* target);
+        bool invalid_line(float* target, plan_line_data_t* pl_data);
         bool invalid_arc(float*            target,
                          plan_line_data_t* pl_data,
                          float*            position,
@@ -60,8 +60,9 @@ namespace Kinematics {
         float min_motor_pos(axis_t axis);
         float max_motor_pos(axis_t axis);
 
-        void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms);
+        void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t& settling_ms);
         void set_homed_mpos(float* mpos);
+        void rearmLimits(AxisMask axisMask, MotorMask motorMask);
 
     private:
         ::Kinematics::KinematicSystem* _system = nullptr;
@@ -84,7 +85,7 @@ namespace Kinematics {
         virtual void init_position() = 0;  // used to set the machine position at init
 
         virtual void constrain_jog(float* cartesian, plan_line_data_t* pl_data, float* position) {}
-        virtual bool invalid_line(float* cartesian) { return false; }
+        virtual bool invalid_line(float* cartesian, plan_line_data_t* pl_data) { return false; }
         virtual bool invalid_arc(float*            target,
                                  plan_line_data_t* pl_data,
                                  float*            position,
@@ -108,8 +109,9 @@ namespace Kinematics {
         virtual float min_motor_pos(axis_t axis) { return _min_motor_pos[axis]; }
         virtual float max_motor_pos(axis_t axis) { return _max_motor_pos[axis]; }
 
-        virtual void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) {}
+        virtual void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t& settling_ms) {}
         virtual void set_homed_mpos(float* mpos) {}
+        virtual void rearmLimits(AxisMask axisMask, MotorMask motorMask) {}
 
         // Configuration interface.
         void afterParse() override {}

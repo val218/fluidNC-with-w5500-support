@@ -47,12 +47,12 @@ namespace Kinematics {
         if (axes->_axis[the_axis]->_softLimits) {
             float amin = std::min(position[the_axis], target[the_axis]);
             if (amin < limitsMinPosition(the_axis)) {
-                limit_error(the_axis, amin);
+                limit_error(the_axis, amin, target, pl_data);
                 return true;
             }
             float amax = std::max(position[the_axis], target[the_axis]);
             if (amax > limitsMaxPosition(the_axis)) {
-                limit_error(the_axis, amax);
+                limit_error(the_axis, amax, target, pl_data);
                 return true;
             }
         }
@@ -187,12 +187,12 @@ namespace Kinematics {
                 // and the minimum extent.
                 float amin = m[a] ? center[a] - radius : std::min(target[the_axis], position[the_axis]);
                 if (amin < limitsMinPosition(the_axis)) {
-                    limit_error(the_axis, amin);
+                    limit_error(the_axis, amin, target, pl_data);
                     return true;
                 }
                 float amax = p[a] ? center[a] + radius : std::max(target[the_axis], position[the_axis]);
                 if (amax > limitsMaxPosition(the_axis)) {
-                    limit_error(the_axis, amax);
+                    limit_error(the_axis, amax, target, pl_data);
                     return true;
                 }
             }
@@ -259,14 +259,14 @@ namespace Kinematics {
         pl_data->limits_checked = true;
     }
 
-    bool Cartesian::invalid_line(float* cartesian) {
+    bool Cartesian::invalid_line(float* cartesian, plan_line_data_t* pl_data) {
         auto axes   = config->_axes;
         auto n_axis = Axes::_numberAxis;
 
         for (axis_t axis = X_AXIS; axis < n_axis; axis++) {
             float coordinate = cartesian[axis];
             if (axes->_axis[axis]->_softLimits && (coordinate < limitsMinPosition(axis) || coordinate > limitsMaxPosition(axis))) {
-                limit_error(axis, coordinate);
+                limit_error(axis, coordinate, cartesian, pl_data);
                 return true;
             }
         }
@@ -490,11 +490,11 @@ namespace Kinematics {
         log_debug("Planned move to " << target[0] << "," << target[1] << "," << target[2] << " @ " << rate);
     }
 
-    void Cartesian::homing_move(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) {
+    void Cartesian::homing_move(AxisMask axisMask, MotorMask motors, Machine::Homing::Phase phase, uint32_t& settle_ms) {
         releaseMotors(axisMask, motors);
         float rate;
         float target[MAX_N_AXIS];
-        axesVector(axisMask, motors, phase, target, rate, settling_ms);
+        axesVector(axisMask, motors, phase, target, rate, settle_ms);
 
         plan_line_data_t plan_data      = {};
         plan_data.spindle_speed         = 0;
@@ -524,6 +524,28 @@ namespace Kinematics {
 
     bool Cartesian::kinematics_homing(AxisMask& axisMask) {
         return false;  // kinematics does not do the homing for catesian systems
+    }
+
+    void Cartesian::rearmLimits(AxisMask axisMask, MotorMask motorMask) {
+        // Iterate through all motors in the motorMask and rearm their switches
+        for (int i = 0; i < MAX_N_AXIS; ++i) {
+            axis_t axis = static_cast<axis_t>(i);
+            if (!(axisMask & (1 << axis))) {
+                continue;  // Skip axes not in the mask
+            }
+            Machine::Axis* a = Machine::Axes::_axis[axis];
+            if (!a) {
+                continue;
+            }
+            // Check motor 0 (bits 0-15)
+            if ((motorMask & (1UL << axis)) && a->_motors[0]) {
+                a->_motors[0]->rearmSwitches();
+            }
+            // Check motor 1 (bits 16-31)
+            if ((motorMask & (1UL << (axis + 16))) && a->_motors[1]) {
+                a->_motors[1]->rearmSwitches();
+            }
+        }
     }
 
     // Configuration registration

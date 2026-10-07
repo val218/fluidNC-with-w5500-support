@@ -7,14 +7,54 @@
 
 namespace Kinematics {
     void WallPlotter::group(Configuration::HandlerBase& handler) {
+        // A puck suspended by two cords, positioned by adjusting each cord's length --
+        // e.g. a wall-mounted plotter/drawbot. Each cord is driven by one machine axis,
+        // measured as cord length rather than a cartesian coordinate.
+
+        // @config left_axis
+        // @default 0
+        // @tuning typical
+        // Which machine axis index drives the left cord's length.
+        // NOT bounds-checked against MAX_N_AXIS -- see transform_cartesian_to_motors()
+        // below for why an out-of-range or Z-and-above value here is unsafe.
         handler.item("left_axis", _left_axis);
+
+        // @config left_anchor_x
+        // @default -100
+        // @tuning per-machine
+        // X position of the left cord's fixed anchor point, in the cartesian frame.
         handler.item("left_anchor_x", _left_anchor_x);
+
+        // @config left_anchor_y
+        // @default 100
+        // @tuning per-machine
+        // Y position of the left cord's fixed anchor point.
         handler.item("left_anchor_y", _left_anchor_y);
 
+        // @config right_axis
+        // @default 1
+        // @tuning typical
+        // Which machine axis index drives the right cord's length.
+        // NOT bounds-checked -- see left_axis above.
         handler.item("right_axis", _right_axis);
+
+        // @config right_anchor_x
+        // @default 100
+        // @tuning per-machine
+        // X position of the right cord's fixed anchor point.
         handler.item("right_anchor_x", _right_anchor_x);
+
+        // @config right_anchor_y
+        // @default 100
+        // @tuning per-machine
+        // Y position of the right cord's fixed anchor point.
         handler.item("right_anchor_y", _right_anchor_y);
 
+        // @config segment_length
+        // @default 10
+        // @tuning typical
+        // Maximum length of the small linear segments a cartesian move is broken into
+        // before being converted to cord lengths (the cord-length transform is nonlinear).
         handler.item("segment_length", _segment_length);
     }
 
@@ -56,8 +96,33 @@ namespace Kinematics {
         return false;
     }
 
-    bool WallPlotter::transform_cartesian_to_motors(float* cartesian, float* motors) {
-        log_error("WallPlotter::transform_cartesian_to_motors is broken");
+    // Inverse of the mapping used in motors_to_cartesian() (left motor runs backward).
+    // Shared by transform_cartesian_to_motors() and the segmented path in
+    // cartesian_to_motors() so they can't disagree on where cable lengths land.
+    //
+    // KNOWN ISSUE: _left_axis/_right_axis come straight from config with no
+    // validation. An out-of-range value is an out-of-bounds write into motors[];
+    // a value >= Z_AXIS gets silently overwritten by the caller's copy of the
+    // remaining cartesian axes into motors[], which would produce wrong (not
+    // crashing) soft-limit bounds. Same unchecked pattern already existed in
+    // motors_to_cartesian()'s reads of motors[_left_axis]/motors[_right_axis]
+    // before this function was implemented -- flagged in PR review
+    // (bdring/FluidNC#1771) as worth a real fix (bounds-check in validate()),
+    // just not folded into that PR.
+    void WallPlotter::lengths_to_motors(float left_length, float right_length, float* motors) {
+        motors[_left_axis]  = 0 - (left_length - zero_left);
+        motors[_right_axis] = 0 + (right_length - zero_right);
+    }
+
+    bool WallPlotter::transform_cartesian_to_motors(float* motors, float* cartesian) {
+        float left_length, right_length;
+        xy_to_lengths(cartesian[X_AXIS], cartesian[Y_AXIS], left_length, right_length);
+        lengths_to_motors(left_length, right_length, motors);
+
+        auto n_axis = Axes::_numberAxis;
+        for (axis_t axis = Z_AXIS; axis < n_axis; axis++) {
+            motors[axis] = cartesian[axis];
+        }
         return true;
     }
 
@@ -76,8 +141,13 @@ namespace Kinematics {
 
         float total_cartesian_distance = vector_distance(position, target, n_axis);
         if (total_cartesian_distance == 0) {
-            mc_move_motors(target, pl_data);
-            return true;
+            // target is in cartesian space; mc_move_motors() expects motor (cable-length)
+            // space, so it must go through the same transform used by the segmented path
+            // below. Sending target directly used to send the machine to a bogus
+            // out-of-bounds position for a repeated move with the same cartesian target.
+            float motors[MAX_N_AXIS];
+            transform_cartesian_to_motors(motors, target);
+            return mc_move_motors(motors, pl_data);
         }
 
         float cartesian_feed_rate = pl_data->feed_rate;
@@ -149,8 +219,7 @@ namespace Kinematics {
             // Note that the left motor runs backward.
             // TODO: It might be better to adjust motor direction in .yaml file by inverting direction pin??
             float cables[MAX_N_AXIS];
-            cables[0] = 0 - (motor_segment_end[0] - zero_left);
-            cables[1] = 0 + (motor_segment_end[1] - zero_right);
+            lengths_to_motors(motor_segment_end[0], motor_segment_end[1], cables);
             for (axis_t axis = Z_AXIS; axis < n_axis; axis++) {
                 cables[axis] = cartesian_segment_end[axis];
             }

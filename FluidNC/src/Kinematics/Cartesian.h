@@ -24,7 +24,7 @@ namespace Kinematics {
         // Kinematic Interface
 
         virtual void constrain_jog(float* cartesian, plan_line_data_t* pl_data, float* position) override;
-        virtual bool invalid_line(float* cartesian) override;
+        virtual bool invalid_line(float* cartesian, plan_line_data_t* pl_data) override;
         virtual bool invalid_arc(float*            target,
                                  plan_line_data_t* pl_data,
                                  float*            position,
@@ -47,8 +47,9 @@ namespace Kinematics {
 
         void axesVector(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, float* target, float& rate, uint32_t& settle_ms);
 
-        void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) override;
+        void homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t& settling_ms) override;
         void set_homed_mpos(float* mpos) override;
+        void rearmLimits(AxisMask axisMask, MotorMask motorMask) override;
 
         // Configuration handlers:
         void afterParse() override {}

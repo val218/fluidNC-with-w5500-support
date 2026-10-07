@@ -10,6 +10,8 @@
 
 Spindles::Spindle* spindle = nullptr;
 
+Spindles::Spindle::IsrSpeedFn spindle_isr_speed_fn = nullptr;
+
 namespace Spindles {
     // ========================= Spindle ==================================
 
@@ -49,13 +51,18 @@ namespace Spindles {
                 new_spindle            = true;
                 log_info("Changed to spindle:" << spindle->name());
             }
+            // Keep the ISR-safe speed thunk in sync with spindle even when it was
+            // already pointed at candidate by some other path (e.g. MachineConfig's
+            // precautionary assignment), so it is never left null after this call.
+            spindle_isr_speed_fn = candidate->isr_speed_fn();
         } else {
             if (spindle == nullptr) {
                 if (spindles.size() == 0) {
                     log_error("No spindles are defined");
                     return;
                 }
-                spindle = spindles[0];
+                spindle              = spindles[0];
+                spindle_isr_speed_fn = spindle->isr_speed_fn();
             }
         }
     }
@@ -124,27 +131,26 @@ namespace Spindles {
 
     // pre_select is generally ignored except for machines that need to get a tool ready
     // set_tool is just used to tell the atc what is already installed.
-    bool Spindle::tool_change(uint32_t tool_number, bool pre_select, bool set_tool) {
+    bool Spindle::tool_change(uint32_t tool_number, bool pre_select, bool set_tool, Channel* channel) {
         if (_atc != NULL) {
             log_info(_name << " spindle changed to tool:" << tool_number << " using " << _atc_name);
-            return _atc->tool_change(tool_number, pre_select, set_tool);
+            return _atc->tool_change(tool_number, pre_select, set_tool, channel);
         }
         if (!_m6_macro.get().empty()) {
             if (pre_select) {
-                return true;
+                return false;
             }
             _last_tool = tool_number;
             if (set_tool) {
-                return true;
+                return false;
             }
-            _m6_macro.run(nullptr);
             // What happens if the macro failed...set alarm in macro & test here?
             //gc_state.current_tool = gc_state.selected_tool;
-            return true;
+            return _m6_macro.run(channel, true);
             //}
         }
 
-        return true;
+        return false;
     }
 
     uint32_t Spindle::maxSpeed() {

@@ -24,7 +24,7 @@ namespace Configuration {
         if (len != _token._key.size()) {
             return false;
         }
-        bool result = !strncasecmp(expected, _token._key.cbegin(), len);
+        bool result = !strncasecmp(expected, _token._key.data(), len);
         if (result) {
             _token._state = TokenState::Matched;
         }
@@ -173,6 +173,16 @@ namespace Configuration {
             parseError("Expected an IP address like 192.168.0.100");
         }
         return ip;
+    }
+
+    step_engine* Parser::stepEngineValue() const {
+        auto token = string_util::trim(_token._value);
+        for (auto const engine : step_engines) {
+            if (string_util::starts_with_ignore_case(token, engine->name)) {
+                return engine;
+            }
+        }
+        return step_engines[0];  // First value is default
     }
 
     // cppcheck-suppress unusedFunction

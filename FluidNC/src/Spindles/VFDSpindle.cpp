@@ -25,6 +25,7 @@
 #include "Protocol.h"  // rtAlarm
 #include "Report.h"    // hex message
 #include "Configuration/HandlerType.h"
+#include "Driver/watchdog.h"  // feed_watchdog()
 
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -74,13 +75,13 @@ namespace Spindles {
             VFD::VFDProtocol::vfd_cmd_queue   = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(VFD::VFDProtocol::VFDaction));
             VFD::VFDProtocol::vfd_speed_queue = xQueueCreate(VFD_RS485_QUEUE_SIZE, sizeof(uint32_t));
 
-            xTaskCreatePinnedToCore(VFD::VFDProtocol::vfd_cmd_task,  // task
+            xTaskCreateAffinitySet(VFD::VFDProtocol::vfd_cmd_task,  // task
                                     "vfd_cmdTaskHandle",             // name for task
                                     4096,                            // size of task stack
                                     this,                            // parameters
                                     1,                               // priority
-                                    &VFD::VFDProtocol::vfd_cmdTaskHandle,
-                                    SUPPORT_TASK_CORE  // core
+                                    (1 << SUPPORT_TASK_CORE),        // affinity mask
+                                    &VFD::VFDProtocol::vfd_cmdTaskHandle
             );
         }
 
@@ -135,7 +136,7 @@ namespace Spindles {
             _current_state = state;
         }
 
-        if (detail_->use_delay_settings()) {
+        if (!detail_->use_speed_feedback()) {
             spindleDelay(state, speed);
             return;
         }
@@ -158,6 +159,11 @@ namespace Spindles {
                 _syncing = false;
                 return;
             }
+            // This runs on the protocol task, which is subscribed to the task
+            // watchdog, and a spinup that keeps making progress can hold us here
+            // well past the TWDT timeout.  Each wait below is bounded at 3 s,
+            // under the 5 s timeout, so feeding once per pass is enough.
+            feed_watchdog();
             if (!xQueueReceive(VFD::VFDProtocol::vfd_speed_queue, &_sync_dev_speed, 3000)) {
                 mc_critical(ExecAlarm::SpindleControl);
                 log_error(name() << ": spindle did not reach device units " << dev_speed << ". Reported value is " << _sync_dev_speed);
@@ -224,22 +230,63 @@ namespace Spindles {
     }
 
     void VFDSpindle::group(Configuration::HandlerBase& handler) {
+        // RS485/Modbus-controlled VFD (Variable Frequency Drive) spindle. Shares a
+        // uartN: section like any other UART consumer (uart_num:), or -- legacy form,
+        // still supported -- can nest its own uart: subsection directly.
         if (handler.handlerType() == Configuration::HandlerType::Generator) {
             if (_uart_num == -1) {
                 handler.section("uart", _uart, 1);
             } else {
+                // @config uart_num
+                // @default -1
+                // @default_note not configured
+                // Which top-level uartN: section this VFD's Modbus link runs over.
                 handler.item("uart_num", _uart_num);
             }
         } else {
             handler.section("uart", _uart, 1);
+            // @config uart_num
+            // @default -1
+            // @default_note not configured
+            // Which top-level uartN: section this VFD's Modbus link runs over.
             handler.item("uart_num", _uart_num);
         }
+
+        // @config modbus_id
+        // @default 1
+        // @tuning typical
+        // Modbus slave address of the VFD -- must match the VFD's own configured value
+        // (per https://modbus.org/docs/PI_MBUS_300.pdf). When in doubt, try 1.
         handler.item("modbus_id", _modbus_id, 0, 247);  // per https://modbus.org/docs/PI_MBUS_300.pdf
+
+        // @config debug
+        // @default 1
+        // Debug message verbosity: 0-1 no debug info, 2 shows missing responses and speed
+        // info, 3+ also shows raw Rx/Tx Modbus messages.
         handler.item("debug", _debug, 0, 5);
+
+        // @config poll_ms
+        // @default 250
+        // How often, in milliseconds, to poll the VFD over Modbus for status/speed.
         handler.item("poll_ms", _poll_ms, 250, 20000);
+
+        // @config retries
+        // @default 5
+        // Number of failed Modbus exchanges tolerated before raising an alarm.
         handler.item("retries", _retries);
 
         Spindle::group(handler);
+        Spindle::groupDelaySettings(handler);
         detail_->group(handler);
+    }
+
+    // Called from the step ISR in place of a virtual dispatch, which would have
+    // to read this class's vtable out of flash.  IRAM_ATTR, and the qualified
+    // call keeps it non-virtual.
+    static void IRAM_ATTR vfdspindle_speed_thunk(Spindle* s, uint32_t dev_speed) {
+        static_cast<VFDSpindle*>(s)->VFDSpindle::setSpeedfromISR(dev_speed);
+    }
+    Spindle::IsrSpeedFn VFDSpindle::isr_speed_fn() {
+        return vfdspindle_speed_thunk;
     }
 }

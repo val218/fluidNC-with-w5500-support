@@ -28,7 +28,7 @@ namespace Kinematics {
         void init_position() override;
         bool cartesian_to_motors(float* target, plan_line_data_t* pl_data, float* position) override;
         void motors_to_cartesian(float* cartesian, float* motors, axis_t n_axis) override;
-        bool transform_cartesian_to_motors(float* cartesian, float* motors) override;
+        bool transform_cartesian_to_motors(float* motors, float* cartesian) override;
         bool kinematics_homing(AxisMask& axisMask) override;
 
         // Configuration handlers:
@@ -41,6 +41,7 @@ namespace Kinematics {
     private:
         void lengths_to_xy(float left_length, float right_length, float& x, float& y);
         void xy_to_lengths(float x, float y, float& left_length, float& right_length);
+        void lengths_to_motors(float left_length, float right_length, float* motors);
 
         // State
         float zero_left;   //  The left cord offset corresponding to cartesian (0, 0).

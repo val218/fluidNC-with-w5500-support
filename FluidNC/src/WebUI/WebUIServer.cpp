@@ -1,19 +1,31 @@
 // Copyright (c) 2014 Luc Lebosse. All rights reserved.
 // Use of this source code is governed by a GPLv3 license that can be found in the LICENSE file.
 
+#include "Platform.h"  // HOSTED
 #include "Machine/MachineConfig.h"
 #include "Serial.h"    // is_realtime_command()
 #include "Settings.h"  // settings_execute_line()
+#include "Error.h"     // ErrorException
 
 #include "WebUIServer.h"
 
-#include "Mdns.h"
+#if !HOSTED
+#    include "WifiScanAsync.h"  // beginAsyncWifiScan(), pollAsyncWifiScan()
+#endif
+
+#include "Driver/fluidnc_mdns.h"
+#include "NetSettings.h"
 
 #include <WiFi.h>
-#include <StreamString.h>
-#include <Update.h>
-#include <esp_wifi_types.h>
-#include <DNSServer.h>
+// #include <StreamString.h>
+#ifdef HAVE_UPDATE
+#    include <Update.h>
+#    include <esp_wifi_types.h>
+#    include <esp_ota_ops.h>
+#endif
+#ifdef HAVE_DNS
+#    include <DNSServer.h>
+#endif
 
 #include "WSChannel.h"
 
@@ -24,22 +36,219 @@
 #include "JSONEncoder.h"
 
 #include "HashFS.h"
+#include "Driver/watchdog.h"  // WatchdogSuspend
+#include <cstdio>
 #include <list>
+#include <algorithm>
+#include <memory>
 
 #include "Mime.h"  // getContentType
 
 #include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
 #include "WebDAV.h"
 
+// Upper bound on concurrent WebSocket clients. Each client carries a WSChannel
+// (line-assembly std::string) plus an AsyncWebSocket send queue of up to
+// WS_MAX_QUEUED_MESSAGES malloc'd frames, so this directly bounds WS heap use.
+// AsyncWebSocket's own default (DEFAULT_MAX_WS_CLIENTS) is 8; a CNC realistically
+// needs a browser plus a pendant or phone. cleanupClients() evicts the oldest
+// when the count exceeds this.
+#ifndef WEBUI_MAX_WS_CLIENTS
+#    define WEBUI_MAX_WS_CLIENTS 4
+#endif
+
+#ifdef HAVE_DNS
 namespace WebUI {
     const byte DNS_PORT = 53;
     DNSServer  dnsServer;
 }
+#endif
+
+namespace {
+    struct FileListChunkState {
+        enum class Phase : uint8_t { Begin, FileEntries, Footer, End, Done };
+
+        explicit FileListChunkState(
+            FluidPath root,
+            std::string request_path,
+            std::string response_status,
+            std::string total_bytes,
+            std::string used_bytes,
+            uint8_t occupation_percent) :
+            root_path(std::move(root)),
+            path(std::move(request_path)),
+            status(std::move(response_status)),
+            total(std::move(total_bytes)),
+            used(std::move(used_bytes)),
+            percent(occupation_percent),
+            encoder([this](const char* s) { pending += s; }) {}
+
+        FileListChunkState(const FileListChunkState&) = delete;
+        FileListChunkState& operator=(const FileListChunkState&) = delete;
+
+        Phase                     phase          = Phase::Begin;
+        stdfs::directory_iterator iter;
+        stdfs::directory_iterator end;
+        FluidPath                 root_path;
+        std::string               path;
+        std::string               status;
+        std::string               total;
+        std::string               used;
+        std::string               pending;
+        size_t                    pending_offset = 0;
+        uint8_t                   percent        = 100;
+        bool                      emit_files     = false;
+        JSONencoder               encoder;
+    };
+
+    int32_t file_entry_size(const stdfs::directory_entry& dir_entry) {
+        std::error_code ec;
+
+        if (dir_entry.is_directory(ec) || ec) {
+            return -1;
+        }
+
+        ec = {};
+        if (!dir_entry.is_regular_file(ec) || ec) {
+            return -1;
+        }
+
+        ec = {};
+        auto entry_size = dir_entry.file_size(ec);
+        if (ec || entry_size == static_cast<uintmax_t>(-1)) {
+            return -1;
+        }
+
+        return static_cast<int32_t>(entry_size);
+    }
+
+    void advance_file_iterator(FileListChunkState& state) {
+        std::error_code ec;
+        state.iter.increment(ec);
+        if (ec) {
+            state.iter = state.end;
+        }
+    }
+
+    void append_file_entry(FileListChunkState& state) {
+        const auto& dir_entry = *state.iter;
+        std::string name      = dir_entry.path().filename().string();
+        int32_t     size      = file_entry_size(dir_entry);
+
+        state.encoder.begin_object();
+        state.encoder.member("name", name);
+        state.encoder.member("shortname", name);
+        state.encoder.member("size", size);
+        state.encoder.member("datetime", "");
+        state.encoder.end_object();
+        advance_file_iterator(state);
+    }
+
+    bool advance_file_list_chunk(FileListChunkState& state) {
+        switch (state.phase) {
+            case FileListChunkState::Phase::Begin:
+                state.encoder.begin();
+                if (state.emit_files) {
+                    state.encoder.begin_array("files");
+                    state.phase = FileListChunkState::Phase::FileEntries;
+                } else {
+                    state.phase = FileListChunkState::Phase::Footer;
+                }
+                state.encoder.flush();
+                return true;
+
+            case FileListChunkState::Phase::FileEntries:
+                if (state.iter == state.end) {
+                    state.encoder.end_array();
+                    state.phase = FileListChunkState::Phase::Footer;
+                } else {
+                    append_file_entry(state);
+                }
+                state.encoder.flush();
+                return true;
+
+            case FileListChunkState::Phase::Footer:
+                state.encoder.member("path", state.path.c_str());
+                state.encoder.member("total", state.total.c_str());
+                state.encoder.member("used", state.used.c_str());
+                state.encoder.member("occupation", state.percent);
+                state.encoder.member("status", state.status.c_str());
+                state.phase = FileListChunkState::Phase::End;
+                state.encoder.flush();
+                return true;
+
+            case FileListChunkState::Phase::End:
+                state.encoder.end();
+                state.phase = FileListChunkState::Phase::Done;
+                return true;
+
+            case FileListChunkState::Phase::Done:
+                return false;
+        }
+
+        return false;
+    }
+
+    AsyncWebServerResponse* create_file_list_response(AsyncWebServerRequest* request,
+                                                      const FluidPath&          fpath,
+                                                      const std::string&        path,
+                                                      const std::string&        status,
+                                                      bool                      list_files) {
+        std::error_code ec;
+        auto            space      = stdfs::space(fpath, ec);
+        uint64_t        totalspace = space.capacity;
+        uint64_t        usedspace  = totalspace - space.available;
+        uint8_t         percent    = totalspace ? (usedspace * 100) / totalspace : 100;
+
+        auto state = std::make_shared<FileListChunkState>(
+            fpath,
+            path,
+            status,
+            formatBytes(totalspace),
+            formatBytes(usedspace),
+            percent);
+
+        if (list_files) {
+            state->iter       = stdfs::directory_iterator { fpath, stdfs::directory_options::skip_permission_denied, ec };
+            state->emit_files = !ec;
+        }
+
+        AsyncWebServerResponse* response = request->beginChunkedResponse(
+            asyncsrv::T_application_json,
+            [state](uint8_t* buffer, size_t maxLen, size_t total) mutable -> size_t {
+                // Runs on async_tcp, which the task watchdog watches.  Walking a
+                // directory on a slow or failing card can take a long time, and
+                // rebooting mid-listing helps nobody.
+                feed_watchdog();
+                (void)total;
+
+                size_t written = 0;
+
+                while (written < maxLen) {
+                    if (state->pending_offset < state->pending.length()) {
+                        size_t chunk_len = std::min(maxLen - written, state->pending.length() - state->pending_offset);
+                        memcpy(buffer + written, state->pending.data() + state->pending_offset, chunk_len);
+                        state->pending_offset += chunk_len;
+                        written += chunk_len;
+                        continue;
+                    }
+
+                    state->pending.clear();
+                    state->pending_offset = 0;
+
+                    if (!advance_file_list_chunk(*state)) {
+                        break;
+                    }
+                }
+
+                return written;
+            });
+        response->addHeader(asyncsrv::T_Cache_Control, asyncsrv::T_no_cache);
+        return response;
+    }
+}
 
 using namespace asyncsrv;
-
-#include <esp_ota_ops.h>
 
 //embedded response file if no files on LocalFS
 #include "NoFile.h"
@@ -66,13 +275,13 @@ namespace WebUI {
     AsyncWebServer*            WebUI_Server::_websocketserver = NULL;
     AsyncHeaderFreeMiddleware* WebUI_Server::_headerFilter    = NULL;
     AsyncWebSocket*            WebUI_Server::_socket_server   = NULL;
-    std::string                WebUI_Server::current_session  = "";
 #ifdef ENABLE_AUTHENTICATION
     AuthenticationIP* WebUI_Server::_head  = NULL;
     uint8_t           WebUI_Server::_nb_ip = 0;
     const int         MAX_AUTH_IP          = 10;
 #endif
     FileStream* WebUI_Server::_uploadFile = nullptr;
+    uint32_t    WebUI_Server::_uploadGeneration = 0;
     std::string WebUI_Server::_uploadPath = "";  // Store upload directory path for listing
 
     EnumSetting *http_enable, *http_block_during_motion;
@@ -95,7 +304,7 @@ namespace WebUI {
 
         _setupdone = false;
 
-        if (WiFi.getMode() == WIFI_OFF || !http_enable->get()) {
+        if (!networkEnabled() || !http_enable->get()) {
             return;
         }
 
@@ -112,10 +321,6 @@ namespace WebUI {
         _headerFilter->keep("If-None-Match");
         _headerFilter->keep("User-Agent");
 
-        // WebDAV needs these
-        _headerFilter->keep("Depth");
-        _headerFilter->keep("Destination");
-
         //For websockets we need to keep these headers, otherwise this wouldn't work!
         _headerFilter->keep("Upgrade");
         _headerFilter->keep("Connection");
@@ -123,6 +328,10 @@ namespace WebUI {
         _headerFilter->keep("Sec-WebSocket-Version");
         _headerFilter->keep("Sec-WebSocket-Protocol");
         _headerFilter->keep("Sec-WebSocket-Extensions");
+
+        // WebDAV needs these
+        _headerFilter->keep("Depth");
+        _headerFilter->keep("Destination");
 
         _webserver->addMiddlewares({ _headerFilter });
 
@@ -142,15 +351,9 @@ namespace WebUI {
         // 4 - Potentially check for a difference in requests headers of v2 vs v3 to dynamically send the proper payload in the same handler
         // For now, I've settled with #3
         _socket_server = new AsyncWebSocket("/");
-
-        _socket_server->addMiddleware([](AsyncWebServerRequest* request, ArMiddlewareNext next) {
-            current_session = getSessionCookie(request);
-            next();  // continue middleware chain
-        });
-        // Passing the current_session globally, lets hope there is no async switch back of other requests to change this in between
         _socket_server->onEvent(
             [](AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
-                WSChannels::handleEvent(server, client, type, arg, data, len, current_session);
+                WSChannels::handleEvent(server, client, type, arg, data, len);
             });
 
         _webserver->addHandler(_socket_server);
@@ -173,6 +376,7 @@ namespace WebUI {
         //web commands
         _webserver->on("/command", HTTP_ANY, handle_web_command);
         _webserver->on("/command_silent", HTTP_ANY, handle_web_command_silent);
+        _webserver->on("/trace", HTTP_ANY, handle_trace);
         _webserver->on("/feedhold_reload", HTTP_ANY, handleFeedholdReload);
         _webserver->on("/cyclestart_reload", HTTP_ANY, handleCyclestartReload);
         _webserver->on("/restart_reload", HTTP_ANY, handleRestartReload);
@@ -181,13 +385,16 @@ namespace WebUI {
         //LocalFS
         _webserver->on("/files", HTTP_ANY, handleFileList, LocalFSFileupload);
 
+#ifdef HAVE_UPDATE
         //web update
         _webserver->on("/updatefw", HTTP_ANY, handleUpdate, WebUpdateUpload);
+#endif
 
         //Direct SD management
         _webserver->on("/upload", HTTP_ANY, handle_direct_SDFileList, SDFileUpload);
         //_webserver->on("/SD", HTTP_ANY, handle_SDCARD);
 
+#ifdef HAVE_DNS
         if (WiFi.getMode() == WIFI_AP) {
             // if DNSServer is started with "*" for domain name, it will reply with
             // provided IP to all DNS request
@@ -198,12 +405,12 @@ namespace WebUI {
             //do not forget the / at the end
             _webserver->on("/fwlink/", HTTP_ANY, handle_root);
         }
+        Mdns::add("_http", "_tcp", _port);
+#endif
 
         log_info("HTTP started on port " << WebUI::http_port->get());
         //start webserver
         _webserver->begin();
-
-        Mdns::add("_http", "_tcp", _port);
 
         HashFS::hash_all();
 
@@ -215,7 +422,9 @@ namespace WebUI {
 
         //        SSDP.end();
 
-        Mdns::remove("_http", "_tcp");
+#ifdef HAVE_DNS
+        WMB Mdns::remove("_http", "_tcp");
+#endif
 
         if (_socket_server) {
             delete _socket_server;
@@ -254,10 +463,21 @@ namespace WebUI {
             int pos = cookies.find("sessionId=");
             if (pos != std::string::npos) {
                 int pos2 = cookies.find(";", pos);
-                return cookies.substr(pos + strlen("sessionId="), pos2);
+                auto start = pos + strlen("sessionId=");
+                if (pos2 == std::string::npos) {
+                    return cookies.substr(start);
+                }
+                return cookies.substr(start, pos2 - start);
             }
         }
         return "";
+    }
+
+    std::string WebUI_Server::getWebSocketSession(AsyncWebServerRequest* request, AsyncWebSocketClient* client) {
+        if (request->hasParam("independent_session")) {
+            return client ? getSession(client) : getSession(request->client());
+        }
+        return getSessionCookie(request);
     }
 
     static void get_random_string(char* str, unsigned int len) {
@@ -340,16 +560,14 @@ namespace WebUI {
         bool        isGzip = false;
         FileStream* file   = NULL;
         try {
-            file = new FileStream(path, "r", LocalFS);
-        } catch (const Error err) {
+            file = new FileStream(fpath, "r", LocalFS);
+        } catch (const ErrorException& err) {
             if (acceptGz) {
                 try {
-                    std::string gzpath(fpath);
-                    //                    std::filesystem::path gzpath(fpath);
-                    gzpath += ".gz";
-                    file   = new FileStream(gzpath, "r", LocalFS);
+                    fpath += ".gz";
+                    file   = new FileStream(fpath, "r");
                     isGzip = true;
-                } catch (const Error err) {}
+                } catch (const ErrorException& err) {}
             }
         }
         if (!file) {
@@ -363,6 +581,7 @@ namespace WebUI {
                     request->client()->close();
                     return 0;  //RESPONSE_TRY_AGAIN; // This only works for ChunkedResponse
                 }
+                feed_watchdog();
                 if (total >= file->size() || request->method() != HTTP_GET) {
                     file = nullptr;
                     return 0;
@@ -398,8 +617,7 @@ namespace WebUI {
         return true;
     }
     void WebUI_Server::sendWithOurAddress(AsyncWebServerRequest* request, const char* content, uint16_t code) {
-        auto        ip    = WiFi.getMode() == WIFI_STA ? WiFi.localIP() : WiFi.softAPIP();
-        std::string ipstr = IP_string(ip);
+        std::string ipstr = webServerIp();
         if (_port != 80) {
             ipstr += ":";
             ipstr += std::to_string(_port);
@@ -437,6 +655,14 @@ namespace WebUI {
 
     void WebUI_Server::handle_root(AsyncWebServerRequest* request) {
         log_info("WebUI: Request from " << request->client()->remoteIP());
+        const char* referer    = request->hasHeader("Referer") ? request->getHeader("Referer")->value().c_str() : "";
+        const char* fetch_mode = request->hasHeader("Sec-Fetch-Mode") ? request->getHeader("Sec-Fetch-Mode")->value().c_str() : "";
+        const char* fetch_dest = request->hasHeader("Sec-Fetch-Dest") ? request->getHeader("Sec-Fetch-Dest")->value().c_str() : "";
+        const char* fetch_site = request->hasHeader("Sec-Fetch-Site") ? request->getHeader("Sec-Fetch-Site")->value().c_str() : "";
+        auto session = getSessionCookie(request);
+        if (!session.empty()) {
+            WSChannels::closeSessionChannels(session);
+        }
         if (!(request->hasParam("forcefallback") && request->getParam("forcefallback")->value() == "yes")) {
             if (myStreamFile(request, "index.html", false, true)) {
                 return;
@@ -449,8 +675,24 @@ namespace WebUI {
         request->send(response);
     }
 
+    void WebUI_Server::handle_trace(AsyncWebServerRequest* request) {
+        std::string msg;
+        if (request->hasParam("msg")) {
+            msg = request->getParam("msg")->value().c_str();
+        }
+        std::printf("[WEBUI_BROWSER] session=%s pageid=%lu msg=%s\n",
+                    getSessionCookie(request).c_str(),
+                    (unsigned long)getPageid(request),
+                    msg.c_str());
+        request->send(200, "text/plain", "");
+    }
+
     // Handle filenames and other things that are not explicitly registered
     void WebUI_Server::handle_not_found(AsyncWebServerRequest* request) {
+        const char* upgrade    = request->hasHeader("Upgrade") ? request->getHeader("Upgrade")->value().c_str() : "";
+        const char* connection = request->hasHeader("Connection") ? request->getHeader("Connection")->value().c_str() : "";
+        const char* protocol =
+            request->hasHeader("Sec-WebSocket-Protocol") ? request->getHeader("Sec-WebSocket-Protocol")->value().c_str() : "";
         if (is_authenticated() == AuthenticationLevel::LEVEL_GUEST) {
             request->redirect("/");
             //_webserver->client().stop();
@@ -458,7 +700,6 @@ namespace WebUI {
         }
 
         std::string path(request->url().c_str());  //request->urlDecode(request->url()).c_str());
-
         if (path.rfind("/api/", 0) == 0) {
             request->send(404);
             return;
@@ -498,13 +739,24 @@ namespace WebUI {
             request->send(503, "text/plain", "Try again when not moving\n");
             return;
         }
+#if !HOSTED
+        // A WiFi AP scan is slow; run it asynchronously so it does not stall
+        // the command task or trip the connection watchdog.  The response is
+        // sent later from poll() -> pollAsyncWifiScan().
+        if (request->method() == HTTP_GET && beginAsyncWifiScan(request, cmd)) {
+            return;
+        }
+#endif
         char line[256];
         strncpy(line, cmd, 255);
         AsyncWebServerResponse* response;
         if (request->method() == HTTP_GET) {
             WebClient* webClient = new WebClient();
             webClient->attachWS(silent);
-            webClient->executeCommandBackground(line);
+            webClient->deliverCommand(line);
+            // Registered like any other channel; the polling task picks up the
+            // queued command line and runs it through execute_line().
+            allChannels.registration(webClient);
             response = request->beginChunkedResponse("", [webClient, request](uint8_t* buffer, size_t maxLen, size_t total) mutable -> size_t {
                 // The method can change before the end... not good
                 //if(request->method() != HTTP_GET)
@@ -517,9 +769,10 @@ namespace WebUI {
             // We rely on AsyncWebServer to take care of that
             request->onDisconnect([webClient]() {
                 webClient->detachWS();
-                allChannels.kill(webClient);
-                // Should not delete, kill() takes care of that
-                //delete webClient;
+                // Should not delete here, kill() takes care of that once no refs remain
+                if (!allChannels.kill(webClient)) {
+                    log_error("Could not queue HTTP command channel for deletion, leaking it");
+                }
             });
         } else
             response = request->beginResponse(200, "", "");
@@ -529,15 +782,24 @@ namespace WebUI {
     }
 
     std::string getSession(AsyncClient* client) {
-        return (std::to_string(IPAddress(client->getRemoteAddress())) + ":" + std::to_string(client->getRemotePort()));
+        if (!client) {
+            return "";
+        }
+        return (std::to_string((uint32_t)IPAddress(client->getRemoteAddress())) + ":" + std::to_string(client->getRemotePort()));
+    }
+    std::string getSession(AsyncWebSocketClient* client) {
+        if (!client) {
+            return "";
+        }
+        return (std::to_string((uint32_t)client->remoteIP()) + ":" + std::to_string(client->remotePort()));
     }
     void WebUI_Server::websocketCommand(AsyncWebServerRequest* request, const char* cmd, uint32_t pageid, AuthenticationLevel auth_level) {
         if (auth_level == AuthenticationLevel::LEVEL_GUEST) {
             request->send(401, "text/plain", "Authentication failed\n");
             return;
         }
-        std::string session  = getSessionCookie(request);
-        bool        hasError = WSChannels::runGCode(pageid, cmd, session);
+        std::string session = getSessionCookie(request);
+        bool hasError = WSChannels::runGCode(pageid, cmd, session);
         request->send(hasError ? 500 : 200, "text/plain", hasError ? "WebSocket dead" : "");
     }
 
@@ -558,9 +820,6 @@ namespace WebUI {
             // [ESPXXX] commands expect data in the HTTP response
             String cmdUpper = cmd;
             cmdUpper.toUpperCase();
-            // Modified async hack // no longer needed...
-            //if (cmdUpper.startsWith("[ESP") || cmdUpper.startsWith("$/") || cmdUpper.startsWith("$ESP") {
-            // Original check (now also work with $ESP400, but is slower than if it was returned as http response)
             if (cmdUpper.startsWith("[ESP") || cmdUpper.startsWith("$/")) {
                 synchronousCommand(request, cmd.c_str(), silent, auth_level, isAllowedInMotion(cmdUpper));
             } else {
@@ -897,6 +1156,7 @@ namespace WebUI {
         }
     }
 
+#ifdef HAVE_UPDATE
     //File upload for Web update
     void WebUI_Server::WebUpdateUpload(AsyncWebServerRequest* request, String filename, size_t index, uint8_t* data, size_t len, bool final) {
         static size_t   last_upload_update;
@@ -979,6 +1239,7 @@ namespace WebUI {
             }
         }
     }
+#endif
 
     void WebUI_Server::handleFileOps(AsyncWebServerRequest* request, const Volume& fs) {
         //this is only for admin and user
@@ -997,8 +1258,6 @@ namespace WebUI {
         }
         _upload_status      = UploadStatus::NONE;
         bool     list_files = true;
-        uint64_t totalspace = 0;
-        uint64_t usedspace  = 0;
 
         //get current path
         if (request->hasParam("path")) {
@@ -1020,7 +1279,14 @@ namespace WebUI {
             }
         }
 
+        // Mounting happens here, and a card that cannot be read - failing, or
+        // formatted as exFAT, which this build of FATFS does not support - can
+        // take a long time to give up.  This runs on the watchdog-watched
+        // async_tcp task, so an unreadable card used to reboot the controller
+        // repeatedly instead of simply reporting that there is no usable card.
+        feed_watchdog();
         FluidPath fpath { path, fs, ec };
+        feed_watchdog();
         if (ec) {
             sendJSON(request, 200, "{\"status\":\"No SD card\"}");
             return;
@@ -1041,7 +1307,13 @@ namespace WebUI {
             } else if (action == "deletedir") {
                 stdfs::path dirpath { fpath / filename };
                 log_debug("Deleting directory " << dirpath.string().c_str());
-                size_t count = stdfs::remove_all(dirpath, ec);
+                size_t count;
+                {
+                    // remove_all walks the whole tree with no place to feed the
+                    // watchdog, and this runs on the watched async_tcp task.
+                    WatchdogSuspend wdt_off;
+                    count = stdfs::remove_all(dirpath, ec);
+                }
                 if (count > 0) {
                     sstatus = filename + " deleted";
                     HashFS::report_change();
@@ -1080,45 +1352,7 @@ namespace WebUI {
             list_files = false;
         }
 
-        AsyncResponseStream* response = request->beginResponseStream(T_application_json);
-        response->setCode(200);
-        response->addHeader(T_Cache_Control, T_no_cache);
-
-        JSONencoder j([response](const char* s) { response->print(s); });
-
-        j.begin();
-
-        if (list_files) {
-            auto iter = stdfs::directory_iterator { fpath, ec };
-            if (!ec) {
-                j.begin_array("files");
-                for (auto const& dir_entry : iter) {
-                    j.begin_object();
-                    j.member("name", dir_entry.path().filename().string());
-                    j.member("shortname", dir_entry.path().filename().string());
-                    j.member("size", dir_entry.is_directory() ? -1 : dir_entry.file_size());
-                    j.member("datetime", "");
-                    j.end_object();
-                }
-                j.end_array();
-            }
-        }
-
-        auto space = stdfs::space(fpath, ec);
-        totalspace = space.capacity;
-        usedspace  = totalspace - space.available;
-
-        j.member("path", path.c_str());
-        j.member("total", formatBytes(totalspace));
-        j.member("used", formatBytes(usedspace + 1));
-
-        uint8_t percent = totalspace ? (usedspace * 100) / totalspace : 100;
-
-        j.member("occupation", percent);
-        j.member("status", sstatus);
-        j.end();
-
-        request->send(response);
+        request->send(create_file_list_response(request, fpath, path, sstatus, list_files));
     }
 
     void WebUI_Server::handle_direct_SDFileList(AsyncWebServerRequest* request) {
@@ -1131,6 +1365,29 @@ namespace WebUI {
     // File upload
     void WebUI_Server::uploadStart(AsyncWebServerRequest* request, const char* filename, size_t filesize, const Volume& fs) {
         std::error_code ec;
+
+        // An upload that never finished leaves its file open.  The onDisconnect
+        // handler installed below normally closes it, but if that callback is
+        // missed for any reason the descriptor stays held for the rest of the
+        // session, and with only two SD descriptors that blocks every later
+        // upload until the board is restarted.  Reclaim it here as well:
+        // whatever it belonged to cannot still be running, because a new upload
+        // is starting and only one is tracked at a time.
+        if (_uploadFile) {
+            log_info("Reclaiming a previous upload that was never closed");
+            // Copy the FluidPath rather than slicing it to a plain path: it
+            // carries the SD mount, and deleting the stream can otherwise drop
+            // the last reference and unmount the card before remove() runs.
+            FluidPath stranded = _uploadFile->fpath();
+            delete _uploadFile;
+            _uploadFile = nullptr;
+            // What it left behind is a partial file.  Half a GCode file is
+            // worse than none - it will run, and stop somewhere arbitrary - so
+            // drop it rather than leave it to be found later.
+            std::error_code rec;
+            stdfs::remove(stranded, rec);
+            HashFS::rehash_file(stranded);
+        }
 
         FluidPath fpath { filename, fs, ec };
         if (ec) {
@@ -1147,8 +1404,8 @@ namespace WebUI {
             _uploadPath = "";  // Root directory
         }
 
-        auto space = stdfs::space(fpath);
-        if (filesize && filesize > space.available) {
+        auto space = stdfs::space(fpath, ec);
+        if (!ec && filesize && filesize > space.available) {
             // If the file already exists, maybe there will be enough space
             // when we replace it.
             auto existing_size = stdfs::file_size(fpath, ec);
@@ -1165,7 +1422,43 @@ namespace WebUI {
             try {
                 _uploadFile    = new FileStream(fpath, "w");
                 _upload_status = UploadStatus::ONGOING;
-            } catch (const Error err) {
+
+                // The upload handler is only called while chunks are arriving.
+                // If the client goes away mid-transfer - the browser cancels, or
+                // the connection drops - it is never called again, so neither
+                // uploadEnd() nor uploadStop() runs, and the open file is
+                // stranded.  There are only two SD file descriptors and a
+                // running job holds one, so a single abandoned upload makes
+                // every later upload fail with "no free file descriptors" until
+                // the board is restarted.
+                //
+                // Identify this upload by generation, not by pointer.  By the
+                // time the callback runs a later upload may be in progress, and
+                // tearing that one down would be worse than the leak - and the
+                // pointer cannot tell them apart, because the allocator readily
+                // returns the just-freed block for the next upload's stream.
+                const uint32_t thisUpload = ++_uploadGeneration;
+                request->onDisconnect([thisUpload]() {
+                    if (!_uploadFile || _uploadGeneration != thisUpload) {
+                        return;  // already finished, or superseded by a later upload
+                    }
+                    log_info("Upload aborted - discarding partial file");
+                    // Hold the FluidPath, not a sliced std::filesystem::path:
+                    // it carries the SD mount, and deleting the stream can
+                    // otherwise unmount the card before remove() runs, leaving
+                    // the partial file exactly where it was meant to be removed.
+                    FluidPath filepath = _uploadFile->fpath();
+                    delete _uploadFile;
+                    _uploadFile    = nullptr;
+                    _upload_status = UploadStatus::FAILED;
+                    _uploadPath.clear();
+                    // A half-written file is worse than none, particularly for
+                    // GCode, so drop it as uploadCheck() would have.
+                    std::error_code ec;
+                    stdfs::remove(filepath, ec);
+                    HashFS::rehash_file(filepath);
+                });
+            } catch (const ErrorException& err) {
                 _uploadFile    = nullptr;
                 _upload_status = UploadStatus::FAILED;
                 log_info("Upload failed - cannot create file");
@@ -1174,8 +1467,21 @@ namespace WebUI {
         }
     }
 
+    // Chunks arrive at roughly the TCP segment size, so delaying on every one
+    // costs about a millisecond per kilobyte -- seconds on a large file.
+    // Bound the gap by elapsed time rather than by a chunk count: how long a
+    // chunk takes to write is a property of the card, so a fixed count can run
+    // arbitrarily long on a slow one, which is exactly the case this path has
+    // to survive.  Time keeps the yield interval the same on any card.
+    static constexpr uint32_t UPLOAD_YIELD_INTERVAL_MS = 20;
+
     void WebUI_Server::uploadWrite(AsyncWebServerRequest* request, uint8_t* buffer, size_t length) {
-        delay_ms(1);
+        static uint32_t last_yield = 0;
+        uint32_t        now        = millis();
+        if ((uint32_t)(now - last_yield) >= UPLOAD_YIELD_INTERVAL_MS) {
+            last_yield = now;
+            delay_ms(1);
+        }
         if (_uploadFile && _upload_status == UploadStatus::ONGOING) {
             //no error write post data
             if (length != _uploadFile->write(buffer, length)) {
@@ -1197,11 +1503,29 @@ namespace WebUI {
             // _uploadFile = nullptr;
 
             std::string pathname = _uploadFile->fpath();
+
+            // Take the reference to the volume before closing the file, so the
+            // mount count never drops to zero here.  Re-establishing it after
+            // the close costs a full card re-initialization, and when heap is
+            // tight it can fail outright -- which would discard a file that had
+            // in fact been written successfully.
+            //
+            // The non-throwing constructor matters because this runs in an
+            // async web server callback, where an escaping exception would
+            // terminate the task and reboot the controller.
+            std::error_code ec;
+            FluidPath       filepath { pathname, LocalFS, ec };
+
             delete _uploadFile;
             _uploadFile = nullptr;
             log_debug("pathname " << pathname);
 
-            FluidPath filepath { pathname, LocalFS };
+            if (ec) {
+                _upload_status = UploadStatus::FAILED;
+                log_info("Upload failed - filesystem inaccessible after write");
+                pushError(request, ESP_ERROR_UPLOAD, "Upload failed, filesystem inaccessible");
+                return;
+            }
 
             HashFS::rehash_file(filepath);
 
@@ -1210,7 +1534,7 @@ namespace WebUI {
                 size_t actual_size;
                 try {
                     actual_size = stdfs::file_size(filepath);
-                } catch (const Error err) { actual_size = 0; }
+                } catch (const ErrorException& err) { actual_size = 0; }
 
                 if (filesize != actual_size) {
                     _upload_status = UploadStatus::FAILED;
@@ -1257,9 +1581,14 @@ namespace WebUI {
 
     void WebUI_Server::poll() {
         static uint32_t start_time = millis();
+#if !HOSTED
+        pollAsyncWifiScan();
+#endif
+#ifdef HAVE_DNS
         if (WiFi.getMode() == WIFI_AP) {
             dnsServer.processNextRequest();
         }
+#endif
         if (_schedule_reboot and _schedule_reboot_time == millis()) {
             _schedule_reboot = false;
             protocol_send_event(&fullResetEvent);
@@ -1268,8 +1597,12 @@ namespace WebUI {
             uint32_t heapsize = xPortGetFreeHeapSize();
             log_verbose("memory: " << heapsize << " min: " << heapLowWater);
             if (_socket_server) {
-                _socket_server->cleanupClients();
+                _socket_server->cleanupClients(WEBUI_MAX_WS_CLIENTS);
                 WSChannels::sendPing();
+                // Clean up channels whose socket died without a DISCONNECT event.
+                // Only silent-AND-disconnected channels are reaped, so the 60 s
+                // window is just debounce against a slow initial handshake.
+                WSChannels::reapStaleChannels(_socket_server, 60 * 1000);
             }
             start_time = millis();
         }

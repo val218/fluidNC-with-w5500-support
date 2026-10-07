@@ -6,10 +6,20 @@
 #include "System.h"                 // sys
 #include "Machine/MachineConfig.h"  // config
 #include "Job.h"                    // Job::
-#include <sstream>
-#include <iomanip>
 
 void MacroEvent::run(void* arg) const {
+    // A macro pin is an asynchronous trigger -- it can fire at any arbitrary
+    // moment, unlike M6's macro or $SD/Run, which are always the result of a
+    // line within whatever job is currently running its own control flow.
+    // Nesting it into an already-active job would interject its gcode into
+    // a motion stream that is still mid-flight, under whatever units/
+    // coordinate state happen to be active at that moment -- reject it
+    // instead, the same way an interloping channel's gcode is rejected with
+    // AnotherInterfaceBusy.
+    if (Job::active()) {
+        log_error("macro" << _num << " ignored: a job is already running");
+        return;
+    }
     config->_macros->_macro[_num].run(nullptr);
 }
 
@@ -18,17 +28,77 @@ const MacroEvent macro1Event { 1 };
 const MacroEvent macro2Event { 2 };
 const MacroEvent macro3Event { 3 };
 
+// Macros::group() (Macros.h) registers each of these via handler.item(macro.name(), macro),
+// not a literal handler.item("name", ...) call per macro -- see ItemDocs.md's "data-driven
+// item lists" section for why these are annotated here, at construction, instead. Every
+// field here is a String (one config-file line, "&"-separated sub-commands, default empty
+// meaning "do nothing").
+
+// @config startup_line0
+// @default ""
+// @default_note empty
+// @tuning typical
+// Legacy Grbl feature (formerly $N0). Runs once, the first time the firmware enters Idle
+// after boot.
 Macro Macros::_startup_line0 { "startup_line0" };
+
+// @config startup_line1
+// @default ""
+// @default_note empty
+// @tuning typical
+// Legacy Grbl feature (formerly $N1). Runs once, the first time the firmware enters Idle
+// after boot, immediately after startup_line0.
 Macro Macros::_startup_line1 { "startup_line1" };
+
 Macro Macros::_macro[] = {
+    // @config macro0
+    // @default ""
+    // @default_note empty
+    // @tuning typical
+    // Runs when macro0_pin (control:) is activated. The switch must read inactive at
+    // startup -- deactivate it before clearing the alarm, same as any other control input.
     Macro { "Macro0" },
+    // @config macro1
+    // @default ""
+    // @default_note empty
+    // @tuning typical
+    // Runs when macro1_pin (control:) is activated.
     Macro { "Macro1" },
+    // @config macro2
+    // @default ""
+    // @default_note empty
+    // @tuning typical
+    // Runs when macro2_pin (control:) is activated.
     Macro { "Macro2" },
+    // @config macro3
+    // @default ""
+    // @default_note empty
+    // @tuning typical
+    // Runs when macro3_pin (control:) is activated.
     Macro { "Macro3" },
 };
 
+// @config after_homing
+// @default ""
+// @default_note empty
+// @tuning typical
+// Runs after a homing cycle completes -- i.e. once every axis with homing enabled has been
+// homed.
 Macro Macros::_after_homing { "after_homing" };
+
+// @config after_reset
+// @default ""
+// @default_note empty
+// @tuning typical
+// Runs after the system resets (power-on/startup, or a Ctrl-X real-time reset), but only if
+// the system ends up in Idle state immediately after the reset.
 Macro Macros::_after_reset { "after_reset" };
+
+// @config after_unlock
+// @default ""
+// @default_note empty
+// @tuning typical
+// Runs after a $X unlock command.
 Macro Macros::_after_unlock { "after_unlock" };
 
 // clang-format off
@@ -58,13 +128,19 @@ Cmd findOverride(std::string name) {
     return it == overrideCodes.end() ? Cmd::None : it->second;
 }
 
-bool Macro::run(Channel* channel) {
+bool Macro::run(Channel* channel, bool defer_ack) {
     if (_gcode.length()) {
         if (channel) {
             log_debug_to(*channel, "Run " << name() << ": " << _gcode);
         }
         Job::save();
-        Job::nest(new MacroChannel(this), channel);
+        // `channel` is the right leader/output-routing target (it may be the
+        // outer job's leader, not the actual line-dispatch channel -- see
+        // Job::dispatch_channel's declaration), but the ack, when deferred,
+        // must go to Job::dispatch_channel instead: that is the channel
+        // holding the processing ref for the M6/M61 line that got us here
+        // (FluidNC issue #1862).
+        Job::nest(new MacroChannel(this), channel, defer_ack ? Job::dispatch_channel : nullptr);
         return true;
     }
     return false;
@@ -154,9 +230,7 @@ Error MacroChannel::pollLine(char* line) {
             log_debug("Macro line: " << line);
             float percent_complete = (float)_position * 100.0f / _macro->get().length();
 
-            std::ostringstream s;
-            s << "SD:" << std::fixed << std::setprecision(2) << percent_complete << "," << name();
-            _progress = s.str();
+            _progress = "SD:" + formatFloat(percent_complete, 2) + "," + name();
         }
             return Error::Ok;
         case Error::Eof:

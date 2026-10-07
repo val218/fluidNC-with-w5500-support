@@ -25,6 +25,12 @@ namespace MotorDrivers {
 
         void group(Configuration::HandlerBase& handler) override {
             TrinamicSpiDriver::group(handler);
+
+            // @config tpfd
+            // @default 4
+            // TMC5160-specific passive fast decay time register value -- affects current
+            // ripple/step smoothness at low microstepping in StealthChop mode. Consult the
+            // TMC5160 datasheet before changing from the default.
             handler.item("tpfd", _tpfd, 0, 15);
         }
 
@@ -35,6 +41,7 @@ namespace MotorDrivers {
 
         bool test();
         void set_registers(bool isHoming);
+        void apply_homing_phase() override;
         void trinamic_test_response();
         void trinamic_stepper_enable(bool enable);
     };

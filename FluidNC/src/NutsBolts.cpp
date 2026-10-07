@@ -9,93 +9,8 @@
 #include <cstring>
 #include <cstdint>
 #include <cmath>
-#include <sstream>
-#include <iomanip>
+#include <cstdio>
 #include <string_view>
-
-const int MAX_INT_DIGITS = 8;  // Maximum number of digits in int32 (and float)
-
-static float uint_to_float(uint32_t intval, int8_t exp) {
-    float fval = (float)intval;
-    // Apply decimal. Should perform no more than two floating point multiplications for the
-    // expected range of E0 to E-4.
-    if (fval != 0) {
-        while (exp <= -2) {
-            fval *= 0.01f;
-            exp += 2;
-        }
-        if (exp < 0) {
-            fval *= 0.1f;
-        } else if (exp > 0) {
-            do {
-                fval *= 10.0;
-            } while (--exp > 0);
-        }
-    }
-    return fval;
-}
-
-// Extracts a floating point value from a string. The following code is based loosely on
-// the avr-libc strtod() function by Michael Stumpf and Dmitry Xmelkov and many freely
-// available conversion method examples, but has been highly optimized for Grbl. For known
-// CNC applications, the typical decimal value is expected to be in the range of E0 to E-4.
-// Scientific notation is officially not supported by g-code, and the 'E' character may
-// be a g-code word on some CNC systems. So, 'E' notation will not be recognized.
-// NOTE: Thanks to Radu-Eosif Mihailescu for identifying the issues with using strtod().
-bool read_float(const char* line, size_t& pos, float& result) {
-    const char* ptr = line + pos;
-
-    // Line is assumed to have no spaces
-
-    // Capture initial positive/minus character
-    char c          = *ptr;
-    bool isnegative = false;
-    if (c == '-') {
-        ++ptr;
-        isnegative = true;
-    } else if (c == '+') {
-        ++ptr;
-    }
-
-    // Extract number into fast integer. Track decimal in terms of exponent value.
-    uint32_t intval    = 0;
-    int8_t   exp       = 0;
-    size_t   ndigit    = 0;
-    bool     isdecimal = false;
-    while (1) {
-        c = *ptr;
-        if (isdigit(c)) {
-            ++ptr;
-            ndigit++;
-            if (ndigit <= MAX_INT_DIGITS) {
-                if (isdecimal) {
-                    exp--;
-                }
-                intval = intval * 10 + c - '0';
-            } else {
-                if (!(isdecimal)) {
-                    exp++;  // Drop overflow digits
-                }
-            }
-        } else if (c == '.' && !(isdecimal)) {
-            ++ptr;
-            isdecimal = true;
-        } else {
-            break;
-        }
-    }
-    // Return if no digits have been read.
-    if (!ndigit) {
-        return false;
-    }
-
-    float fval = uint_to_float(intval, exp);
-
-    result = isnegative ? -fval : fval;
-
-    pos = ptr - line;  // Set pos to next statement
-    return true;
-}
 
 uint32_t get_ms() {
     return xTaskGetTickCount() * (1000 / configTICK_RATE_HZ);
@@ -219,6 +134,14 @@ const char* to_hex(uint32_t n) {
     return hexstr;
 }
 
+// Lightweight fixed-precision float formatting.  Uses snprintf instead of
+// std::ostringstream/<iomanip> to reduce reliance on libstdc++, which is quite large
+std::string formatFloat(double value, int decimals) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.*f", decimals, value);
+    return std::string(buf);
+}
+
 std::string formatBytes(uint64_t bytes) {
     if (bytes < 1024) {
         return std::to_string((uint16_t)bytes) + " B";
@@ -226,29 +149,21 @@ std::string formatBytes(uint64_t bytes) {
     float b = bytes;
     b /= 1024;
     if (b < 1024) {
-        std::ostringstream msg;
-        msg << std::fixed << std::setprecision(2) << b << " KB";
-        return msg.str();
+        return formatFloat(b, 2) + " KB";
     }
     b /= 1024;
     if (b < 1024) {
-        std::ostringstream msg;
-        msg << std::fixed << std::setprecision(2) << b << " MB";
-        return msg.str();
+        return formatFloat(b, 2) + " MB";
     }
     b /= 1024;
     if (b < 1024) {
-        std::ostringstream msg;
-        msg << std::fixed << std::setprecision(2) << b << " GB";
-        return msg.str();
+        return formatFloat(b, 2) + " GB";
     }
     b /= 1024;
     if (b > 99999) {
         b = 99999;
     }
-    std::ostringstream msg;
-    msg << std::fixed << std::setprecision(2) << b << " TB";
-    return msg.str();
+    return formatFloat(b, 2) + " TB";
 }
 
 std::string IP_string(uint32_t ipaddr) {

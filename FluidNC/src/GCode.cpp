@@ -23,6 +23,7 @@
 
 #include <string.h>  // memset
 #include <math.h>    // sqrt etc.
+#include <vector>
 
 // Allow iteration over CoordIndex values
 CoordIndex& operator++(CoordIndex& i) {
@@ -152,6 +153,31 @@ static void gcode_comment_msg(const char* comment) {
 static std::optional<WaitOnInputMode> validate_wait_on_input_mode_value(objnum_t);
 static Error                          gc_wait_on_input(bool is_digital, objnum_t input_number, WaitOnInputMode mode, float timeout);
 
+static constexpr size_t MaxSpindleSpeedClusterSize = 16;
+
+static bool parse_spindle_speed_cluster(const char* line, size_t& pos, float first_value, std::vector<float>& clustered_values) {
+    clustered_values.clear();
+    clustered_values.push_back(first_value);
+
+    while (line[pos] == ':') {
+        if (clustered_values.size() >= MaxSpindleSpeedClusterSize) {
+            log_error("Spindle speed cluster exceeds maximum of " << MaxSpindleSpeedClusterSize << " values");
+            return false;
+        }
+
+        ++pos;
+
+        float clustered_value;
+        if (!read_number(line, pos, clustered_value) || clustered_value < 0.0f) {
+            return false;
+        }
+
+        clustered_values.push_back(clustered_value);
+    }
+
+    return true;
+}
+
 // Edit GCode line in-place, removing whitespace and comments and
 // converting to uppercase
 void collapseGCode(char* line) {
@@ -211,8 +237,8 @@ void collapseGCode(char* line) {
         // where the sequence of lines is potentially never-ending.  A sender that handles
         // files on the host system could apply the % semantics.
 
-        if (Job::active()) {
-            Job::channel()->percent();
+        if (Channel* jc = Job::channel()) {
+            jc->percent();
         }
         // Do not pass the % to the GCode interpreter
         *line = '\0';
@@ -243,7 +269,34 @@ void gc_wco_changed() {
 // In this function, all units and positions are converted and
 // exported to internal functions in terms of (mm, mm/min) and absolute machine
 // coordinates, respectively.
-Error gc_execute_line(const char* input_line) {
+const char* gc_last_line = "";
+
+Error gc_execute_line(const char* input_line, Channel& channel) {
+    gc_last_line = input_line;
+    // Set by M6/M61 tool-change handling below if it started an
+    // asynchronous macro/ATC job whose completion, not this call, owns the
+    // reply to this line (FluidNC issue #1862). Once set, every return from
+    // this function -- including the error returns further down, e.g. for a
+    // combined M6/M62 line where the M62 half fails -- must go through
+    // deferred_err() rather than returning its own Error directly: the job
+    // is already running and will fire its own deferred ack when it
+    // finishes, so returning anything but Error::Deferred here would also
+    // have protocol_main_loop ack this line immediately, a double reply and
+    // a double release of the channel's processing ref.
+    bool deferred_ack = false;
+    auto deferred_err = [&](Error err) {
+        if (!deferred_ack) {
+            return err;
+        }
+        // The job is already running and its own completion will send the
+        // eventual reply, normally Error::Ok -- attach this real error to it
+        // instead, or it would otherwise be silently lost (e.g. a valid
+        // "M6 M62 P0" with an undefined output would report ok once the tool
+        // change finishes, never telling the sender the M62 half failed).
+        Job::set_ack_error(Job::dispatch_channel, err);
+        return Error::Deferred;
+    };
+
     char line[128];
     if (strlen(input_line) > 127) {
         return Error::LineLengthExceeded;
@@ -281,6 +334,7 @@ Error gc_execute_line(const char* input_line) {
     bool laserIsMotion        = false;
     bool nonmodalG38          = false;  // Used for G38.6-9
     bool isWaitOnInputDigital = false;
+    std::vector<float> clustered_spindle_speeds;
 
     auto    n_axis = Axes::_numberAxis;
     float   coord_data[MAX_N_AXIS];  // Used by WCO-related commands
@@ -594,7 +648,10 @@ Error gc_execute_line(const char* input_line) {
                             case 30:
                                 gc_block.modal.coord_select = CoordIndex::G59_3;
                                 break;
+                            default:
+                                return Error::GcodeUnsupportedCommand;  // [G59.4+ not supported]
                         }
+                        mantissa    = 0;  // Set to zero to indicate valid non-integer G command.
                         mg_word_bit = ModalGroup::MG12;
                         break;
                         // NOTE: G59.x are not supported.
@@ -840,7 +897,14 @@ Error gc_execute_line(const char* input_line) {
                         break;
                     case 'S':
                         axis_word_bit     = GCodeWord::S;
-                        gc_block.values.s = value;
+                        if (line[pos] == ':') {
+                            if (!parse_spindle_speed_cluster(line, pos, value, clustered_spindle_speeds)) {
+                                return Error::BadNumberFormat;
+                            }
+                            gc_block.values.s = clustered_spindle_speeds.back();
+                        } else {
+                            gc_block.values.s = value;
+                        }
                         break;
                     case 'T':
                         axis_word_bit = GCodeWord::T;
@@ -1534,6 +1598,11 @@ Error gc_execute_line(const char* input_line) {
             }
         }
     }
+    if (clustered_spindle_speeds.size() > 1) {
+        if (axis_command != AxisCommand::MotionMode || gc_block.modal.motion != Motion::Linear || !axis_words) {
+            return Error::GcodeUnsupportedCommand;
+        }
+    }
     // [21. Program flow ]: No error checks required.
     // [0. Non-specific error-checks]: Complete unused value words check, i.e. IJK used when in arc
     // radius mode, or axis words that aren't used in the block.
@@ -1624,8 +1693,9 @@ Error gc_execute_line(const char* input_line) {
     }
     // [0. Non-specific/common error-checks and miscellaneous setup]:
     // NOTE: If no line number is present, the value is zero.
-    gc_state.line_number = gc_block.values.n;
-    pl_data->line_number = gc_state.line_number;  // Record data for planner use.
+    gc_state.line_number     = gc_block.values.n;
+    pl_data->line_number     = gc_state.line_number;  // Record data for planner use.
+    pl_data->has_line_number = bitnum_is_true(value_words, GCodeWord::N);
 
     // [1. Comments feedback ]:  NOT SUPPORTED
     // [2. Set feed rate mode ]:
@@ -1665,8 +1735,10 @@ Error gc_execute_line(const char* input_line) {
             if (new_spindle) {
                 gc_state.spindle_speed = 0.0;
             }
-            log_info("Current T:" << gc_state.current_tool  << "Selected T:" << gc_state.selected_tool);
-            spindle->tool_change(gc_state.selected_tool, false, false);
+            log_info("Current T:" << gc_state.current_tool << " Selected T:" << gc_state.selected_tool);
+            if (spindle->tool_change(gc_state.selected_tool, false, false, &channel)) {
+                deferred_ack = true;
+            }
             if (spindle->_atc_name == "" && spindle->_m6_macro.get().empty()) {  // if neither of these exist we need to set the value here
                 gc_state.current_tool = gc_state.selected_tool;
             }
@@ -1676,7 +1748,7 @@ Error gc_execute_line(const char* input_line) {
     }
     if (gc_block.modal.set_tool_number == SetToolNumber::Enable) {  // M61
         if (gc_block.values.q < 0) {
-            return Error::NegativeValue;  // https://linuxcnc.org/docs/2.8/html/gcode/m-code.html#mcode:m61
+            return deferred_err(Error::NegativeValue);  // https://linuxcnc.org/docs/2.8/html/gcode/m-code.html#mcode:m61
         }
         gc_state.selected_tool = gc_block.values.q;
         bool stopped_spindle   = false;  // was spindle stopped via the change
@@ -1689,7 +1761,9 @@ Error gc_execute_line(const char* input_line) {
         if (new_spindle) {
             gc_state.spindle_speed = 0.0;
         }
-        spindle->tool_change(gc_state.selected_tool, false, true);
+        if (spindle->tool_change(gc_state.selected_tool, false, true, &channel)) {
+            deferred_ack = true;
+        }
         gc_state.current_tool = gc_block.values.q;
         report_ovr_counter    = 0;  // Set to report change immediately
         gc_ovr_changed();
@@ -1744,10 +1818,10 @@ Error gc_execute_line(const char* input_line) {
             }
             bool turnOn = gc_block.modal.io_control == IoControl::DigitalOnSync || gc_block.modal.io_control == IoControl::DigitalOnImmediate;
             if (!config->_userOutputs->setDigital((int)gc_block.values.p, turnOn)) {
-                return Error::PParamMaxExceeded;
+                return deferred_err(Error::PParamMaxExceeded);
             }
         } else {
-            return Error::PParamMaxExceeded;
+            return deferred_err(Error::PParamMaxExceeded);
         }
     }
     if ((gc_block.modal.io_control == IoControl::SetAnalogSync) || (gc_block.modal.io_control == IoControl::SetAnalogImmediate)) {
@@ -1761,10 +1835,10 @@ Error gc_execute_line(const char* input_line) {
                 protocol_buffer_synchronize();
             }
             if (!config->_userOutputs->setAnalogPercent((int)gc_block.values.e, gc_block.values.q)) {
-                return Error::PParamMaxExceeded;
+                return deferred_err(Error::PParamMaxExceeded);
             }
         } else {
-            return Error::PParamMaxExceeded;
+            return deferred_err(Error::PParamMaxExceeded);
         }
     }
     if (gc_block.modal.io_control == IoControl::WaitOnInput) {
@@ -1783,7 +1857,7 @@ Error gc_execute_line(const char* input_line) {
         };
         auto const maybe_input_number = validate_input_number(isWaitOnInputDigital ? gc_block.values.p : gc_block.values.e);
         if (!maybe_input_number.has_value()) {
-            return Error::PParamMaxExceeded;
+            return deferred_err(Error::PParamMaxExceeded);
         }
         auto const input_number = *maybe_input_number;
         auto const wait_mode    = *validate_wait_on_input_mode_value(gc_block.values.l);
@@ -1889,7 +1963,11 @@ Error gc_execute_line(const char* input_line) {
         if (axis_command == AxisCommand::MotionMode) {
             GCUpdatePos gc_update_pos = GCUpdatePos::Target;
             if (gc_state.modal.motion == Motion::Linear) {
-                mc_linear(gc_block.values.xyz, pl_data, gc_state.position);
+                if (clustered_spindle_speeds.size() > 1) {
+                    mc_clustered_linear_move(gc_block.values.xyz, pl_data, gc_state.position, clustered_spindle_speeds);
+                } else {
+                    mc_linear(gc_block.values.xyz, pl_data, gc_state.position);
+                }
             } else if (gc_state.modal.motion == Motion::Seek) {
                 pl_data->motion.rapidMotion = 1;  // Set rapid motion flag.
                 mc_linear(gc_block.values.xyz, pl_data, gc_state.position);
@@ -1916,7 +1994,7 @@ Error gc_execute_line(const char* input_line) {
             // motion control system might still be processing the action and the real tool position
             // in any intermediate location.
             if (sys.abort()) {
-                return Error::Reset;
+                return deferred_err(Error::Reset);
             }
             if (gc_update_pos == GCUpdatePos::Target) {
                 copyAxes(gc_state.position, gc_block.values.xyz);
@@ -1947,8 +2025,8 @@ Error gc_execute_line(const char* input_line) {
         case ProgramFlow::CompletedM30:
             protocol_buffer_synchronize();  // Sync and finish all remaining buffered motions before moving on.
 
-            if (Job::active()) {
-                Job::channel()->end();
+            if (Channel* jc = Job::channel()) {
+                jc->end();
             }
             // Upon program complete, only a subset of g-codes reset to certain defaults, according to
             // LinuxCNC's program end descriptions and testing. Only modal groups [G-code 1,2,3,5,7,12]
@@ -1990,7 +2068,8 @@ Error gc_execute_line(const char* input_line) {
     }
     gc_state.modal.program_flow = ProgramFlow::Running;  // Reset program flow.
 
-    return perform_assignments() ? Error::Ok : Error::ParameterAssignmentFailed;
+    bool assignments_ok = perform_assignments();
+    return assignments_ok ? deferred_err(Error::Ok) : deferred_err(Error::ParameterAssignmentFailed);
 
     // TODO: % to denote start of program.
 }
@@ -2000,21 +2079,14 @@ Error gc_execute_line(const char* input_line) {
 
   - Canned cycles
   - Tool radius compensation
-  - A,B,C-axes
-  - Evaluation of expressions
-  - Variables
-  - Override control (TBD)
-  - Tool changes
   - Switches
 
    (*) Indicates optional parameter, enabled through config.h and re-compile
    group 0 = {G92.2, G92.3} (Non modal: Cancel and re-enable G92 offsets)
    group 1 = {G81 - G89} (Motion modes: Canned cycles)
    group 4 = {M1} (Optional stop, ignored)
-   group 6 = {M6} (Tool change)
    group 7 = {G41, G42} cutter radius compensation (G40 is supported)
    group 8 = {G43} tool length offset (G43.1/G49 are supported)
-   group 8 = {M7*} enable mist coolant (* Compile-option)
    group 9 = {M48, M49} enable/disable feed and speed override switches
    group 10 = {G98, G99} return mode canned cycles
    group 13 = {G61.1, G64} path control mode (G61 is supported)

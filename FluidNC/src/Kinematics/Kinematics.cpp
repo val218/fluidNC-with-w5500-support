@@ -15,9 +15,9 @@ namespace Kinematics {
         return _system->constrain_jog(target, pl_data, position);
     }
 
-    bool Kinematics::invalid_line(float* target) {
+    bool Kinematics::invalid_line(float* target, plan_line_data_t* pl_data) {
         Assert(_system != nullptr, no_system);
-        return _system->invalid_line(target);
+        return _system->invalid_line(target, pl_data);
     }
 
     bool Kinematics::invalid_arc(float*            target,
@@ -77,7 +77,7 @@ namespace Kinematics {
         return _system->max_motor_pos(axis);
     }
 
-    void Kinematics::homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t settling_ms) {
+    void Kinematics::homing_move(AxisMask axes, MotorMask motors, Machine::Homing::Phase phase, uint32_t& settling_ms) {
         Assert(_system != nullptr, no_system);
         return _system->homing_move(axes, motors, phase, settling_ms);
     }
@@ -85,6 +85,11 @@ namespace Kinematics {
     void Kinematics::set_homed_mpos(float* mpos) {
         Assert(_system != nullptr, no_system);
         return _system->set_homed_mpos(mpos);
+    }
+
+    void Kinematics::rearmLimits(AxisMask axisMask, MotorMask motorMask) {
+        Assert(_system != nullptr, no_system);
+        return _system->rearmLimits(axisMask, motorMask);
     }
 
     void Kinematics::group(Configuration::HandlerBase& handler) {

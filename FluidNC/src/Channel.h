@@ -27,6 +27,8 @@
 
 #include <Stream.h>
 #include <freertos/FreeRTOS.h>  // TickType_T
+#include <freertos/semphr.h>
+#include <atomic>
 #include <queue>
 
 class Channel : public Stream {
@@ -40,10 +42,20 @@ private:
     static constexpr int timeout = 2000;
 
 public:
+    // PinLowFirst/PinHighFirst are inclusive lower bounds and PinLowLast/PinHighLast
+    // are exclusive upper bounds (see the "cmd < PinLowLast" style checks in
+    // handleRealtimeCharacter()), so each range should span a full 0x40 codepoints,
+    // for pin indices 0-63. Making *Last one codepoint short of the next range's
+    // *First, as previously written, wasted one codepoint per range (0x13f and 0x17f
+    // decoded to neither a Low nor a High pin event) and capped the usable pin index
+    // at 62 instead of 63.
     static constexpr int PinLowFirst  = 0x100;
-    static constexpr int PinLowLast   = 0x13f;
+    static constexpr int PinLowLast   = 0x140;
     static constexpr int PinHighFirst = 0x140;
-    static constexpr int PinHighLast  = 0x17f;
+    static constexpr int PinHighLast  = 0x180;
+    // Highest usable pin-event index, e.g. for a well-known software pin that every
+    // channel should recognize regardless of per-instance/per-config pin assignment.
+    static constexpr int MaxPinIndex = PinLowLast - PinLowFirst - 1;
 
     static constexpr int maxLine = 255;
 
@@ -56,7 +68,26 @@ protected:
     bool        _addCR         = false;
     char        _lastWasCR     = false;
 
-    std::queue<uint8_t> _queue;
+    mutable SemaphoreHandle_t _queue_mutex = xSemaphoreCreateMutex();
+    std::queue<uint8_t>       _queue;
+
+    // _queue holds non-realtime input bytes seen by pollLine(nullptr) until a
+    // pollLine(line) call consumes them.  A channel that is polled for realtime
+    // characters but never for lines - e.g. any non-job channel while a job is
+    // running - would otherwise grow _queue without bound.  Bound it at a few
+    // lines of slack (~4).  When a new line arrives with the queue already at
+    // the bound, that whole line is discarded through its newline; a line
+    // already in progress is allowed to finish, so the queue never holds a
+    // partial line.  State below is touched only under _queue_mutex.
+    static constexpr size_t _queue_limit        = 4 * maxLine;
+    bool                    _queue_at_line_start = true;   // last queued byte ended a line (or queue empty)
+    bool                    _queue_discarding    = false;  // dropping the rest of an over-limit line
+    bool                    _queue_overflow_logged = false;  // one debug line per overflow episode
+    // Enqueue one non-realtime input byte, applying the whole-line drop policy.
+    void queue_push(uint8_t byte);
+
+    // Send interval reports while idle too, not only while in motion.
+    bool _report_when_idle = false;
 
     uint32_t _reportInterval = 0;
     int32_t  _nextReportTime = 0;
@@ -65,18 +96,24 @@ protected:
     uint8_t     _lastTool         = 0;
     float       _lastSpindleSpeed = 0;
     float       _lastFeedRate     = 0;
-    const char* _lastStateName    = "";
     MotorMask   _lastLimits       = 0;
     bool        _lastJobActive    = false;
     std::string _lastPinString    = "";
 
-    bool       _reportOvr = true;
-    bool       _reportWco = true;
-    CoordIndex _reportNgc = CoordIndex::End;
+    bool       _reportState = true;
+    bool       _reportOvr   = true;
+    bool       _reportWco   = true;
+    CoordIndex _reportNgc   = CoordIndex::End;
 
     Cmd _last_rt_cmd = Cmd::None;
 
     std::map<int, InputPin*> _pins;
+
+    // Pin events not tied to any one Channel instance -- shared across all channels,
+    // so a pin registered here is recognized on every current and future channel
+    // (WebSocket, Telnet, UART, ...), unlike _pins above which is per-instance and
+    // only reachable on whichever channel a real/configured Pin happens to be bound to.
+    static std::map<int, InputPin*> _virtual_pins;
 
     UTF8 _utf8;
 
@@ -87,11 +124,47 @@ protected:
     bool _active = true;
     bool _paused = false;
 
+    // Set by pollLine() when it returns a complete line, cleared by ack() (or
+    // by clear_pending_ack(), for a caller that must not write to the
+    // channel but still needs to unblock it -- see its declaration). While
+    // set, pollLine() behaves as though called with line == nullptr: realtime
+    // characters still work, but no further line is completed, and
+    // non-realtime bytes queue in _queue instead (see its comment) until the
+    // ack arrives, however long that takes -- including the duration of an
+    // M6/$SD/Run job this same line started (FluidNC issue #1862). This
+    // caps a sender at one line in flight without rejecting anything it
+    // sends ahead of that ack under character-counting flow control: it
+    // simply waits in _queue and is processed, in order, once unblocked.
+    //
+    // pollLine() sets it on the polling task, but ack()/clear_pending_ack()
+    // can run on either task (protocol_main_loop's cmd_queue consumer calls
+    // ack() directly on the protocol task; a deferred job's completion,
+    // Job::unnest()/Job::abort(), calls it from the polling task; flushRx()
+    // can run from whichever task resets the system) -- atomic like
+    // _processing_refs/_closing below, not a plain bool, so a write on one
+    // task is guaranteed visible to a read on the other.
+    std::atomic<bool> _pending_ack { false };
+
+    std::atomic<uint32_t> _queued_log_refs { 0 };
+    std::atomic<uint32_t> _processing_refs { 0 };
+    std::atomic<bool>     _closing { false };
+
 public:
     explicit Channel(const std::string& name, bool addCR = false);
     explicit Channel(const char* name, bool addCR = false);
     Channel(const char* name, objnum_t num, bool addCR = false);
-    virtual ~Channel() = default;
+
+    Channel(const Channel&)            = delete;
+    Channel& operator=(const Channel&) = delete;
+    Channel(Channel&&)                 = delete;
+    Channel& operator=(Channel&&)      = delete;
+
+    virtual ~Channel() {
+        if (_queue_mutex) {
+            vSemaphoreDelete(_queue_mutex);
+            _queue_mutex = nullptr;
+        }
+    }
 
     int8_t _ackwait = 0;  // 1 - waiting, 0 - ACKed, -1 - NAKed
 
@@ -99,7 +172,13 @@ public:
     virtual void  handle() {}
     virtual Error pollLine(char* line);
     virtual void  ack(Error status);
-    const char*   name() { return _name.c_str(); }
+    // Clears the pending-ack gate pollLine() set for the line just resolved,
+    // without writing anything to the channel -- for a caller that has a
+    // reason not to call ack() (e.g. protocol_main_loop skips it on
+    // sys.abort(), where a channel could be mid-teardown) but must still
+    // unblock the channel's next line, or it would stay gated forever.
+    void        clear_pending_ack() { _pending_ack.store(false, std::memory_order_release); }
+    const char* name() { return _name.c_str(); }
 
     virtual void sendLine(MsgLevel level, const char* line);
     virtual void sendLine(MsgLevel level, const std::string* line);
@@ -115,7 +194,7 @@ public:
     // the remaining space that mechanism has available.
     // The queue can handle more than 256 characters but we don't want it to get too
     // large, so we report a limited size.
-    virtual int rx_buffer_available() { return std::max(0, 256 - int(_queue.size())); }
+    virtual int rx_buffer_available() { return std::max(0, 256 - int(queued_bytes())); }
 
     // flushRx() discards any characters that have already been received.  It is used
     // after a reset, so that anything already sent will not be processed.
@@ -153,13 +232,14 @@ public:
         return retval;
     }
 
+    void notifyState() { _reportState = true; }
     void notifyOvr() { _reportOvr = true; }
     void notifyWco() { _reportWco = true; }
     void notifyNgc(CoordIndex coord) { _reportNgc = coord; }
 
     int peek() override { return -1; }
     int read() override { return -1; }
-    int available() override { return _queue.size(); }
+    int available() override { return queued_bytes(); }
 
     virtual void print_msg(MsgLevel level, const char* msg);
 
@@ -183,6 +263,9 @@ public:
     }
     void push(const std::string& s) { push(reinterpret_cast<const uint8_t*>(s.c_str()), s.length()); }
 
+    size_t queued_bytes() const;
+    bool   try_pop_queued_byte(uint8_t& byte);
+
     void end() { _ended = true; }
     void percent() { _percent = true; }
 
@@ -197,6 +280,11 @@ public:
     void ready();
     void registerEvent(pinnum_t pinnum, InputPin* obj);
 
+    // Registers obj at pinnum in the shared, channel-independent virtual-pin table
+    // (see _virtual_pins). Intended to be called once, during single-threaded init,
+    // before any channel starts polling.
+    static void registerVirtualPin(pinnum_t pinnum, InputPin* obj);
+
     size_t lineNumber() { return _line_number; }
     void   setLineNumber(size_t line_number) { _line_number = line_number; }
 
@@ -207,4 +295,13 @@ public:
 
     void pause();
     void resume();
+
+    bool     try_acquire_log_ref();
+    void     release_log_ref();
+    bool     try_acquire_processing_ref();
+    void     release_processing_ref();
+    void     begin_closing();
+    bool     is_closing() const;
+    uint32_t pending_log_refs() const;
+    uint32_t pending_processing_refs() const;
 };

@@ -12,6 +12,7 @@
 #include "string_util.h"  // split_prefix()
 
 #include "HashFS.h"
+#include "Driver/watchdog.h"  // feed_watchdog()
 
 #include <charconv>
 
@@ -50,10 +51,13 @@ static Error openFile(const Volume& fs, const char* parameter, Channel& out, Inp
 
     try {
         theFile = new InputFile(fs, path.c_str());
+    } catch (const ErrorException& ex) {
+        log_error_to(out, ex.what());
+        return ex.error();
     } catch (std::filesystem::filesystem_error const& ex) {
         log_error_to(out, ex.what());
         return Error::FsFailedOpenFile;
-    } catch (Error err) { return err; }
+    }
     return Error::Ok;
 }
 
@@ -69,6 +73,7 @@ static Error showFile(const Volume& fs, const char* parameter, AuthenticationLev
     char  fileLine[255];
     Error res;
     while ((res = theFile->readLine(fileLine, 255)) == Error::Ok) {
+        feed_watchdog();  // A large file takes longer than the watchdog timeout
         // We cannot use the 2-argument form of log_stream() here because
         // fileLine can be overwritten by readLine before the output
         // task has a chance to forward the line to the output channel.
@@ -149,6 +154,7 @@ static Error fileShowSome(const char* parameter, AuthenticationLevel auth_level,
         char  fileLine[255];
         Error res = Error::Ok;
         for (uint32_t linenum = 0; linenum < lastline && (res = theFile->readLine(fileLine, 255)) == Error::Ok; ++linenum) {
+            feed_watchdog();  // Skipping to a late firstline reads the file from the start
             if (linenum >= firstline) {
                 j.string(fileLine);
             }
@@ -229,6 +235,7 @@ static Error fileSendJson(const char* parameter, AuthenticationLevel auth_level,
         int  len;
 
         while ((len = theFile->read(fileLine, 100)) > 0) {
+            feed_watchdog();
             fileLine[len] = '\0';
             // std::string s(fileLine);
             //                replace_string_in_place(s, "\n", "");
@@ -258,9 +265,16 @@ static Error runFile(const Volume& fs, const char* parameter, AuthenticationLeve
         Job::restore();
         return err;
     }
-    Job::nest(theFile, &out);
+    // `out` is the right channel for leader/diagnostic routing (passed as
+    // out_channel below), but NOT necessarily the channel actually waiting
+    // on this command's reply: when $SD/Run is itself a job's own line (an
+    // SD file that contains "$SD/Run=..."), `out` is that outer job's
+    // leader, not the inner job source whose processing ref this dispatch
+    // holds. Job::dispatch_channel is that one -- see its declaration and
+    // FluidNC issue #1862.
+    Job::nest(theFile, &out, Job::dispatch_channel);
 
-    return Error::Ok;
+    return Error::Deferred;
 }
 
 static Error runSDFile(const char* parameter, AuthenticationLevel auth_level, Channel& out) {  // ESP220
@@ -283,6 +297,9 @@ static Error deleteObject(const Volume& fs, const char* name, Channel& out) {
     try {
         FluidPath fpath { name, fs };
         if (stdfs::is_directory(fpath)) {
+            // remove_all() walks the whole tree internally with no place to
+            // feed the watchdog, and a big directory takes a long time.
+            WatchdogSuspend wdt_off;
             stdfs::remove_all(fpath);
         } else {
             stdfs::remove(fpath);
@@ -310,6 +327,13 @@ static Error listFilesystem(const Volume& fs, const char* value, AuthenticationL
         auto      iter  = stdfs::recursive_directory_iterator { fpath };
         auto      space = stdfs::space(fpath);
         for (auto const& dir_entry : iter) {
+            // This walks the whole tree, and a card that has been in a Mac or a
+            // Windows box carries an index directory - .Spotlight-V100,
+            // System Volume Information - holding thousands of entries.  The
+            // walk then runs for long enough to trip the task watchdog and
+            // reboot the board, which is not an obvious consequence of asking
+            // for a file listing.
+            feed_watchdog();
             if (dir_entry.is_directory()) {
                 log_stream(out, "[DIR:" << std::string(iter.depth(), ' ') << dir_entry.path().filename().string());
             } else {
@@ -351,6 +375,7 @@ static Error listFilesystemJSON(const Volume& fs, const char* value, Authenticat
 
         j.begin_array("files");
         for (auto const& dir_entry : iter) {
+            feed_watchdog();  // See listFilesystem() - index directories can be huge
             j.begin_object();
             j.member("name", dir_entry.path().filename().string());
             j.member("size", dir_entry.is_directory() ? -1 : dir_entry.file_size());
@@ -408,6 +433,7 @@ static Error listGCodeFiles(const char* parameter, AuthenticationLevel auth_leve
             error = "Bad path";
         } else {
             for (auto const& dir_entry : iter) {
+                feed_watchdog();  // See listFilesystem() - index directories can be huge
                 auto fn     = dir_entry.path().filename();
                 auto is_dir = dir_entry.is_directory();
                 if (out.is_visible(fn.stem().string(), fn.extension().string(), is_dir)) {
@@ -483,12 +509,13 @@ static Error copyFile(const Volume& ifs, const char* ipath, const Volume& ofs, c
         uint8_t    buf[512];
         size_t     len;
         while ((len = inFile.read(buf, 512)) > 0) {
+            feed_watchdog();
             outFile.write(buf, len);
         }
         filepath = outFile.fpath();
-    } catch (const Error err) {
+    } catch (const ErrorException& err) {
         log_error_to(out, "Cannot create file " << opath);
-        return Error::FsFailedCreateFile;
+        return err.error();
     }
     // Rehash after outFile goes out of scope
     HashFS::rehash_file(filepath);
@@ -526,6 +553,7 @@ static Error copyDir(const Volume& ifs, const std::string_view iDir, const Volum
     }
     Error err = Error::Ok;
     for (auto const& dir_entry : iter) {
+        feed_watchdog();
         if (dir_entry.is_directory()) {
             log_error_to(out, "Not handling localfs subdirectories");
         } else {
@@ -615,12 +643,23 @@ static Error xmodem_receive(const char* value, AuthenticationLevel auth_level, C
     pollingPaused = false;
     if (len >= 0) {
         log_info("Received " << len << " bytes to file " << outfile->path());
+    } else if (len == -6) {
+        log_info("Reception failed: not enough free space on the target filesystem");
     } else {
         log_info("Reception failed or was canceled");
     }
     std::filesystem::path fname = outfile->fpath();
     delete outfile;
-    HashFS::rehash_file(fname);
+    if (len < 0) {
+        // Don't leave a truncated, incomplete file behind - especially
+        // important for the not-enough-space case, where leaving the
+        // partial file around would eat into the free space a retry needs.
+        std::error_code ec;
+        stdfs::remove(fname, ec);
+        HashFS::delete_file(fname);
+    } else {
+        HashFS::rehash_file(fname);
+    }
 
     return len < 0 ? Error::UploadFailed : Error::Ok;
 }

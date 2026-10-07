@@ -1,0 +1,55 @@
+name: Build FluidNC 4.1.1 W5500 (ESP32-S3)
+
+on:
+  push:
+    branches: [ fluidnc-4.1.1-w5500 ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git-version.py uses git history for the version string
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build firmware (wifi_s3)
+        run: pio run -e wifi_s3
+
+      - name: Build merged flash image (bootloader + partitions + firmware + filesystem)
+        run: pio run -e wifi_s3 -t build_merged
+
+      - name: Collect binaries
+        run: |
+          mkdir -p out
+          B=.pio/build/wifi_s3
+          cp $B/firmware.bin $B/bootloader.bin $B/partitions.bin out/
+          cp $B/littlefs.bin out/ 2>/dev/null || true
+          cp $B/merged-flash.bin out/ 2>/dev/null || true
+          ls -l out
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluidnc-4.1.1-w5500-s3-${{ github.sha }}
+          path: out/
+          retention-days: 30
