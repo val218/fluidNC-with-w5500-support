@@ -164,7 +164,7 @@ namespace WebUI {
                 return Error::Ok;
             }
             std::string gateway, netmask, ip;
-            if (!(get_param(parameter, "GW", gateway) && get_param(parameter, "MSK", netmask) && get_param(parameter, "IP", ip))) {
+            if (!(get_param(parameter, "GW=", gateway) && get_param(parameter, "MSK=", netmask) && get_param(parameter, "IP=", ip))) {
                 return Error::InvalidValue;
             }
 
