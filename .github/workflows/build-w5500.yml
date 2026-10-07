@@ -4,6 +4,12 @@ on:
   push:
     branches: [ fluidnc-4.1.1-w5500 ]
   workflow_dispatch:
+    inputs:
+      backtrace:
+        description: "Optional: paste a 'Backtrace: 0x...' line to decode against this build"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   build:
@@ -42,10 +48,22 @@ jobs:
         run: |
           mkdir -p out
           B=.pio/build/wifi_s3
-          cp $B/firmware.bin $B/bootloader.bin $B/partitions.bin out/
+          cp $B/firmware.bin $B/firmware.elf $B/bootloader.bin $B/partitions.bin out/
           cp $B/littlefs.bin out/ 2>/dev/null || true
           cp $B/merged-flash.bin out/ 2>/dev/null || true
           ls -l out
+
+      - name: Decode backtrace
+        if: ${{ inputs.backtrace != '' }}
+        env:
+          BT: ${{ inputs.backtrace }}
+        run: |
+          A2L=$(find ~/.platformio/packages -name 'xtensa-esp32s3-elf-addr2line' -type f | head -1)
+          [ -z "$A2L" ] && A2L=$(find ~/.platformio/packages -name '*addr2line' -type f | head -1)
+          echo "Using $A2L"
+          ADDRS=$(echo "$BT" | grep -oE '0x[0-9a-fA-F]{8}:0x[0-9a-fA-F]{8}' | cut -d: -f1 | tr '\n' ' ')
+          echo "=== DECODED BACKTRACE ==="
+          "$A2L" -pfiaC -e .pio/build/wifi_s3/firmware.elf $ADDRS
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
