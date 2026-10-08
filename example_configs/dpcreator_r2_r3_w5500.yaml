@@ -1,0 +1,198 @@
+board: dpCREATOR R2/R3
+name: dpCREATOR 4-axis CNC (W5500)
+meta: ESP32-S3-WROOM-1-N16R8, FluidNC 4.1.1 + W5500
+
+# ------------------------------------------------------------------
+# UART0 = FluidNC console, fixed in firmware (not configurable here):
+#   TXD0 = GPIO43, RXD0 = GPIO44, 115200 8N1  (UART_0 connector J7)
+#   Reserved for future GPIO expansion (needs a firmware change).
+# USB CDC console on native USB (GPIO19/20) is also available.
+# ------------------------------------------------------------------
+
+stepping:
+  engine: RMT
+  idle_ms: 255
+  pulse_us: 4
+  dir_delay_us: 1
+  disable_delay_us: 0
+  segments: 12
+
+# ---------------- SPI bus: SD card + W5500 ----------------
+spi:
+  miso_pin: gpio.13
+  mosi_pin: gpio.11
+  sck_pin: gpio.12
+
+sdcard:
+  cs_pin: gpio.10
+  card_detect_pin: NO_PIN
+  frequency_hz: 8000000
+
+ethernet:
+  cs_pin: gpio.14
+  int_pin: gpio.9
+  rst_pin: NO_PIN
+  phy_type: w5500
+  phy_addr: 1
+  frequency_hz: 8000000
+
+# ---------------- UART1: TabUI pendant ----------------
+uart1:
+  txd_pin: gpio.1
+  rxd_pin: gpio.2
+  rts_pin: NO_PIN
+  cts_pin: NO_PIN
+  baud: 115200
+  mode: 8N1
+
+uart_channel1:
+  uart_num: 1
+  report_interval_ms: 75
+  message_level: Info
+
+# ---------------- UART2: RS485 (DE on GPIO40) ----------------
+uart2:
+  txd_pin: gpio.42
+  rxd_pin: gpio.41
+  rts_pin: gpio.40
+  cts_pin: NO_PIN
+  baud: 9600
+  mode: 8N1
+
+# ---------------- Axes ----------------
+kinematics:
+  Cartesian:
+
+axes:
+  shared_stepper_disable_pin: gpio.8     # STEP_EN_RAW - add :low if drivers enable on low
+  shared_stepper_reset_pin: NO_PIN
+  homing_runs: 2
+
+  x:
+    steps_per_mm: 400.000                # <-- SET for your mechanics
+    max_rate_mm_per_min: 3000.000
+    acceleration_mm_per_sec2: 200.000
+    max_travel_mm: 600.000
+    soft_limits: false
+    homing:
+      cycle: 2
+      positive_direction: false
+      mpos_mm: 0.000
+      feed_mm_per_min: 200.000
+      seek_mm_per_min: 1500.000
+      settle_ms: 250
+    motor0:
+      limit_all_pin: gpio.47:low         # LIM_X (optocoupler)
+      hard_limits: false
+      pulloff_mm: 2.000
+      standard_stepper:
+        step_pin: gpio.4
+        direction_pin: gpio.5
+        disable_pin: NO_PIN
+
+  y:
+    steps_per_mm: 400.000                # <-- SET
+    max_rate_mm_per_min: 3000.000
+    acceleration_mm_per_sec2: 200.000
+    max_travel_mm: 400.000
+    soft_limits: false
+    homing:
+      cycle: 2
+      positive_direction: false
+      mpos_mm: 0.000
+      feed_mm_per_min: 200.000
+      seek_mm_per_min: 1500.000
+      settle_ms: 250
+    motor0:
+      limit_all_pin: gpio.48:low         # LIM_Y
+      hard_limits: false
+      pulloff_mm: 2.000
+      standard_stepper:
+        step_pin: gpio.6
+        direction_pin: gpio.7
+        disable_pin: NO_PIN
+
+  z:
+    steps_per_mm: 400.000                # <-- SET
+    max_rate_mm_per_min: 1500.000
+    acceleration_mm_per_sec2: 100.000
+    max_travel_mm: 100.000
+    soft_limits: false
+    homing:
+      cycle: 1
+      positive_direction: true
+      mpos_mm: 0.000
+      feed_mm_per_min: 100.000
+      seek_mm_per_min: 800.000
+      settle_ms: 250
+    motor0:
+      # LIM_Z_PROBE on GPIO45 is shared with the probe on R2.
+      # FluidNC allows one role per pin: it is the Z limit here.
+      # To use it as the probe instead, set this to NO_PIN and
+      # set probe: pin: gpio.45:low
+      limit_all_pin: gpio.45:low
+      hard_limits: false
+      pulloff_mm: 2.000
+      standard_stepper:
+        step_pin: gpio.15
+        direction_pin: gpio.16
+        disable_pin: NO_PIN
+
+  a:
+    steps_per_mm: 44.444                 # <-- SET (rotary: steps per degree)
+    max_rate_mm_per_min: 3000.000
+    acceleration_mm_per_sec2: 200.000
+    max_travel_mm: 360.000
+    soft_limits: false
+    motor0:
+      limit_all_pin: gpio.38:low         # LIM_A
+      hard_limits: false
+      pulloff_mm: 2.000
+      standard_stepper:
+        step_pin: gpio.17
+        direction_pin: gpio.18
+        disable_pin: NO_PIN
+
+# ---------------- Probe ----------------
+probe:
+  pin: NO_PIN                            # R2: shared with Z limit (GPIO45)
+  # pin: gpio.3:low                      # R3: separate PROBE on GPIO3
+  toolsetter_pin: NO_PIN
+  check_mode_start: true
+
+# ---------------- Spindle ----------------
+# PWM on GPIO21 (also feeds the 0-10V output if AOUT is derived from PWM)
+# Relay on GPIO39 used as spindle on/off
+PWM:
+  pwm_hz: 5000
+  output_pin: gpio.21
+  enable_pin: gpio.39
+  direction_pin: NO_PIN
+  disable_with_s0: false
+  s0_with_disable: true
+  spinup_ms: 2000
+  spindown_ms: 2000
+  tool_num: 0
+  speed_map: 0=0.000% 24000=100.000%
+
+# RS485 VFD on UART2 - uncomment and pick your VFD type:
+# Huanyang:
+#   uart_num: 2
+#   modbus_id: 1
+#   tool_num: 1
+#   spinup_ms: 5000
+#   spindown_ms: 5000
+#   speed_map: 0=0% 24000=100%
+
+coolant:
+  flood_pin: NO_PIN
+  mist_pin: NO_PIN
+
+control:
+  safety_door_pin: NO_PIN
+  reset_pin: NO_PIN
+  feed_hold_pin: NO_PIN
+  cycle_start_pin: NO_PIN
+
+start:
+  must_home: false
