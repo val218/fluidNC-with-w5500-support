@@ -1,4 +1,5 @@
 > **dpCREATOR / W5500 Ethernet build** - full guide: [W5500_ETHERNET.md](W5500_ETHERNET.md)
+> - **[Quick start: turn on Ethernet](W5500_ETHERNET.md#quick-start-turn-on-ethernet)**
 > - [Get the firmware](W5500_ETHERNET.md#1-get-the-firmware) · [Wiring](W5500_ETHERNET.md#2-wiring) · [config.yaml](W5500_ETHERNET.md#3-configyaml) · [Ethernet setup](W5500_ETHERNET.md#4-switch-fluidnc-to-ethernet)
 > - [Connect gSender over Ethernet](W5500_ETHERNET.md#5-connect-gsender-over-ethernet)
 > - [SD card as a network drive + automatic pendant .viz](W5500_ETHERNET.md#6-sd-card-as-a-network-drive-windows)

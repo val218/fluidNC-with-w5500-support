@@ -18,8 +18,49 @@ plus dpCREATOR additions:
 
 Tested on a dpCREATOR R2/R3 (ESP32-S3-WROOM-1-N16R8).
 
+## Quick start: turn on Ethernet
+
+Send these over USB (serial console), one line at a time. `config.yaml` must
+contain the `ethernet:` section (see [section 3](#3-configyaml)), or the W5500
+won't start.
+
+**Automatic IP (DHCP):**
+
+```
+$network/type=Ethernet
+$Ethernet/IPMode=DHCP
+$bye
+```
+
+**Fixed IP** (recommended for gSender and the network drive, the address never
+changes; use a free address in your own LAN):
+
+```
+$network/type=Ethernet
+$Ethernet/IPMode=Static
+$Ethernet/IP=192.168.10.50
+$Ethernet/Netmask=255.255.255.0
+$Ethernet/Gateway=192.168.10.1
+$bye
+```
+
+**Check it** after the reboot:
+
+```
+$Ethernet/Status
+$Startup/Show
+```
+
+Look for `Ethernet link up` and `Ethernet IP is 192.168.10.x`, then
+`ping 192.168.10.x` from the PC and open `http://192.168.10.x` in a browser.
+
+WiFi is off after this. To go back: `$network/type=WiFi`, then `$bye` (over USB).
+
+---
+
 **Contents**
 
+0. [Quick start: turn on Ethernet](#quick-start-turn-on-ethernet)
 1. [Get the firmware](#1-get-the-firmware)
 2. [Wiring](#2-wiring)
 3. [config.yaml](#3-configyaml)
