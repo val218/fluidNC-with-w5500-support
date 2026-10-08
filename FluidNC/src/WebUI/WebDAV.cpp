@@ -27,6 +27,7 @@
 #include "Driver/watchdog.h"  // WatchdogSuspend
 
 #include "Mime.h"
+#include "VizGenerator.h"  // pendant .viz rebuild after writes to /sd
 
 using namespace asyncsrv;
 
@@ -38,6 +39,21 @@ bool WebDAV::canHandle(AsyncWebServerRequest* request) const {
         return true;
     }
     return false;
+}
+
+// Destination headers arrive URL-encoded ("my%20job.nc").
+static std::string percent_decode(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() && isxdigit((unsigned char)s[i + 1]) && isxdigit((unsigned char)s[i + 2])) {
+            out += char(strtol(s.substr(i + 1, 2).c_str(), nullptr, 16));
+            i += 2;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
 }
 
 static const char* rootname = "/";
@@ -360,6 +376,9 @@ void WebDAV::handleRequest(AsyncWebServerRequest* request) {
             // we are done.  We will handle PUT without body data below.
             delete state->outFile;
             request->send(201);  // Created
+            if (_url == "/sd") {
+                viz_file_written(request->url().c_str());
+            }
         }
         // If state was non-null but state->outFile was null, handleBody
         // rejected the operation and already sent the response code.
@@ -737,6 +756,10 @@ void WebDAV::handleMove(const FluidPath& fpath, DavResource resource, AsyncWebSe
         if (ec) {
             response = request->beginResponse(500, "text/plain", "Unable to move");
         } else {
+            if (_url == "/sd") {
+                viz_file_removed(request->url().c_str());
+                viz_file_written("/sd" + percent_decode(newname));
+            }
             //        HashFS::rename_file(fpath, newname);
             response = request->beginResponse(201);
             // XXX webdav go server adds text/plain "Created" response
@@ -751,6 +774,9 @@ void WebDAV::handleDelete(const FluidPath& fpath, DavResource resource, AsyncWeb
     std::error_code ec;
     if (resource == DavResource::FILE) {
         okay = stdfs::remove(fpath, ec);
+        if (okay && _url == "/sd") {
+            viz_file_removed(request->url().c_str());
+        }
     } else {
         // remove_all walks the whole tree with no place to feed the watchdog,
         // and this runs on async_tcp, which AsyncTCP subscribes to it.

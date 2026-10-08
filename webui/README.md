@@ -28,18 +28,16 @@ Updating only the UI on a running board: upload `webui-index.html.gz` as
 | Run job | `$SD/Run=/file.nc` or `$LocalFS/Run=/file.nc` |
 | Progress | `SD:<percent>,<file>` field of the status report |
 
-## TabUI pendant previews (.viz)
+## TabUI pendant previews (.viz) and pendant status
 
-The pendant shows a preview from `<file>.viz` stored next to the G-code on
-the SD card. With **Pendant .viz** ticked (default, remembered per browser),
-every G-code file uploaded to the SD card, or saved from the editor, gets one
-built automatically: the UI sends `$Viz/Delete=/sd/<file>` then
-`$Viz/Generate=/sd/<file>` and shows `VizBusy`/`VizReady`/`VizErr` as they
-arrive. Generation pauses the controller briefly, so it only runs while the
-machine is Idle; requests made during a job wait until it finishes. The
-**Pendant .viz** button on a selected file rebuilds it by hand (useful for
-files copied onto the card with a PC). `.viz` files are hidden from the list
-and deleted together with their G-code file.
+The firmware builds `<file>.viz` itself whenever G-code is written to the SD
+card (this UI, a mapped network drive, the classic UI) - see section 6 of
+`W5500_ETHERNET.md`. The UI shows its `VizAutoBusy/VizAutoReady/VizAutoErr`
+messages, hides `.viz` files from the list, and the **Pendant .viz** button on
+a selected file sends `$Viz/Refresh=/sd/<file>` to rebuild by hand.
+
+The header badge shows whether the TabUI pendant on UART1 is connected
+(`$Pendant/Status` on connect, then `[MSG:Pendant:...]` on change).
 
 ## Developing without a board
 

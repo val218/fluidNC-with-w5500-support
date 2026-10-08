@@ -9,6 +9,16 @@
 #include "Serial.h"     // allChannels
 #include "System.h"
 #include "Driver/watchdog.h"  // feed_watchdog
+#include "State.h"            // state_is
+#include "Job.h"              // Job::active
+#include "PendantLink.h"      // pendant_channel
+#include "UartChannel.h"
+#include "FluidPath.h"        // keeps the SD card mounted while we use it
+
+#include <Arduino.h>  // millis
+#include <atomic>
+#include <mutex>
+#include <vector>
 
 #include <cstring>
 #include <cstdlib>
@@ -46,8 +56,18 @@ static const char* skip_to_letter(const char* p) {
     return p;
 }
 
+// Builds started from the upload queue (not by a $Viz/Generate request) report
+// as VizAutoBusy/VizAutoReady/VizAutoErr and skip the pendant UART: the pendant
+// loads whatever file a "VizReady:" names, which would hijack its preview.
+static bool _auto_mode = false;
+
 static void viz_msg(const char* msg) {
-    char buf[128];
+    char buf[160];
+    if (_auto_mode && strncmp(msg, "Viz", 3) == 0) {
+        snprintf(buf, sizeof(buf), "[MSG:VizAuto%s]\r\n", msg + 3);
+        allChannels.print_except(buf, static_cast<Channel*>(pendant_channel()));
+        return;
+    }
     snprintf(buf, sizeof(buf), "[MSG:%s]\r\n", msg);
     allChannels.print(buf);
 }
@@ -220,6 +240,8 @@ bool viz_exists(const std::string& nc_path) {
 
 bool viz_generate(const std::string& nc_path) {
     if (_viz_busy) { viz_msg("VizBusy:already generating"); return false; }
+    std::error_code ec;  // SD is mounted on demand; hold it while we work
+    FluidPath       mount { nc_path.compare(0, 4, "/sd/") == 0 ? nc_path : "/sd/" + nc_path, SD, ec };
     std::string vp = viz_path(nc_path);
     if (viz_exists(nc_path)) {
         char msg[128]; snprintf(msg, sizeof(msg), "VizReady:%s", vp.c_str());
@@ -233,9 +255,104 @@ bool viz_generate(const std::string& nc_path) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Upload queue: WebDAV / web uploads of G-code to /sd queue a rebuild here
+// (from the web server task); viz_poll() runs it on the protocol task once the
+// machine is Idle with no job. A short settle delay coalesces the empty-file
+// PUT + data PUT that Windows/macOS do, and bursts of copied files.
+// ---------------------------------------------------------------------------
+struct VizRequest {
+    std::string path;
+    uint32_t    due;
+};
+static std::mutex              _q_mutex;
+static std::vector<VizRequest> _queue;
+static std::atomic<int>        _q_len { 0 };
+static const uint32_t          settle_ms = 1500;
+
+static bool is_gcode(const std::string& p) {
+    static const char* const exts[] = { ".nc", ".gcode", ".gc", ".ngc", ".tap", ".cnc", ".g" };
+    auto dot = p.find_last_of('.');
+    if (dot == std::string::npos || p.find('/', dot) != std::string::npos) return false;
+    std::string ext = p.substr(dot);
+    for (auto& c : ext) c = tolower(c);
+    for (auto e : exts) if (ext == e) return true;
+    return false;
+}
+
+static bool on_sd(const std::string& p) { return p.compare(0, 4, "/sd/") == 0; }
+
+static void enqueue(const std::string& path, uint32_t delay) {
+    std::lock_guard<std::mutex> lock(_q_mutex);
+    uint32_t due = millis() + delay;
+    for (auto& r : _queue) {
+        if (r.path == path) { r.due = due; return; }
+    }
+    _queue.push_back({ path, due });
+    _q_len = _queue.size();
+}
+
+void viz_file_written(const std::string& path) {
+    if (on_sd(path) && is_gcode(path)) enqueue(path, settle_ms);
+}
+
+void viz_file_removed(const std::string& path) {
+    if (!on_sd(path) || !is_gcode(path)) return;
+    {
+        std::lock_guard<std::mutex> lock(_q_mutex);
+        for (auto it = _queue.begin(); it != _queue.end(); ++it) {
+            if (it->path == path) { _queue.erase(it); break; }
+        }
+        _q_len = _queue.size();
+    }
+    std::error_code ec;
+    FluidPath       mount { path, SD, ec };
+    if (!ec) remove(viz_path(path).c_str());
+}
+
+void viz_poll() {
+    if (_q_len == 0 || _viz_busy) return;
+    if (!state_is(State::Idle) || Job::active()) return;
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lock(_q_mutex);
+        uint32_t now = millis();
+        for (auto it = _queue.begin(); it != _queue.end(); ++it) {
+            if ((int32_t)(now - it->due) >= 0) {
+                path = it->path;
+                _queue.erase(it);
+                break;
+            }
+        }
+        _q_len = _queue.size();
+    }
+    if (path.empty()) return;
+    std::error_code ec;
+    FluidPath       mount { path, SD, ec };  // SD is mounted on demand; hold it
+    if (ec) return;
+    FILE* f = fopen(path.c_str(), "r");  // deleted or renamed meanwhile?
+    if (!f) return;
+    fclose(f);
+    std::string vp = viz_path(path);
+    remove(vp.c_str());  // never serve a stale preview for a rewritten file
+    _viz_busy  = true;
+    _auto_mode = true;
+    do_generate(path, vp);
+    _auto_mode = false;
+    _viz_busy  = false;
+}
+
 bool viz_handle_command(const char* line) {
     if (strncmp(line, "$Viz/", 5) != 0) return false;
     const char* cmd = line + 5;
+    // Rebuild in the background (queued, Idle-only, pendant not disturbed).
+    if (strncmp(cmd, "Refresh=", 8) == 0) {
+        std::string p = cmd + 8;
+        if (!on_sd(p)) p = "/sd" + std::string(p[0] == '/' ? "" : "/") + p;
+        if (!is_gcode(p)) { viz_msg("VizAutoErr:not a G-code file"); return true; }
+        enqueue(p, 0);
+        return true;
+    }
     if (strncmp(cmd, "Generate=", 9) == 0) { viz_generate(cmd + 9); return true; }
     if (strncmp(cmd, "Delete=", 7) == 0) {
         remove(viz_path(cmd + 7).c_str());

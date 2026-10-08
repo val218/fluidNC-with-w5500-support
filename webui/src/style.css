@@ -47,6 +47,10 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
 .conn { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
 .conn-open { color: var(--ok); border-color: #2a5a35; }
 .conn-closed, .conn-connecting { color: var(--warn); }
+.pendant { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.pendant::before { content: "●"; margin-right: 5px; }
+.pendant-connected { color: var(--accent); border-color: #1d5f8f; }
+.pendant-disconnected { color: var(--muted); }
 .legacy { color: var(--muted); font-size: 12px; text-decoration: none; }
 .legacy:hover { color: var(--accent); }
 .job { font-size: 12px; color: #9ecbff; }

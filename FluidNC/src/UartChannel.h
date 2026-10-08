@@ -20,9 +20,18 @@ private:
     // not enough: line noise at power-up produces those.
     bool _peer_spoke = false;
 
+    // Traffic timestamps (millis) for link-presence detection (PendantLink).
+    volatile uint32_t _last_rx_ms = 0;
+    volatile uint32_t _last_tx_ms = 0;
+    volatile bool     _rx_seen    = false;
+
     static constexpr int _ack_timeout = 2000;
 
 public:
+    uint32_t last_rx_ms() const { return _last_rx_ms; }
+    uint32_t last_tx_ms() const { return _last_tx_ms; }
+    bool     rx_seen() const { return _rx_seen; }
+
     UartChannel(objnum_t num, bool addCR = false);
 
     void init() override;

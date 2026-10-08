@@ -15,6 +15,7 @@
   <div id="alarm" class="alarm" hidden></div>
   <div class="top-right">
     <span id="job" class="job" hidden></span>
+    <span id="pendant" class="pendant" hidden></span>
     <span id="conn" class="conn conn-closed" title="Connection">offline</span>
     <a class="legacy" href="/legacy.html" title="Original FluidNC WebUI">Classic UI</a>
   </div>
@@ -143,7 +144,6 @@
     <div class="file-actions">
       <label class="btn">Upload<input type="file" id="upload" hidden multiple></label>
       <button class="btn" id="refresh">Refresh</button>
-      <label class="switch" title="After uploading G-code to the SD card, build the .viz preview file the TabUI pendant shows"><input type="checkbox" id="auto-viz" checked> Pendant .viz</label>
       <span id="file-path" class="muted"></span>
     </div>
     <div id="upload-progress" class="progress small" hidden><div></div></div>
@@ -155,7 +155,7 @@
         <button class="btn accent" id="run">▶ Run</button>
         <button class="btn" id="preview">Preview</button>
         <button class="btn" id="edit">Edit</button>
-        <button class="btn" id="make-viz" title="Rebuild the TabUI pendant preview (.viz) for this file">Pendant .viz</button>
+        <button class="btn" id="make-viz" title="Rebuild the TabUI pendant preview (.viz) for this file (done automatically after uploads)">Pendant .viz</button>
         <button class="btn danger" id="del">Delete</button>
       </div>
     </div>

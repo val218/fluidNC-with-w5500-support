@@ -18,6 +18,30 @@ import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+SESSIONS = set()          # out() of every open WebSocket
+PENDANT = ["connected"]   # TabUI pendant link state (GET /mock/pendant?state=... to change)
+GCODE_RE = re.compile(r"\.(nc|gcode|gc|ngc|tap|cnc|g)$", re.I)
+
+
+async def broadcast(texts):
+    for out in list(SESSIONS):
+        try:
+            await out(texts)
+        except Exception:
+            pass
+
+
+async def auto_viz(rel):
+    """Like the firmware: build <file>.viz after a write to /sd, report VizAuto*."""
+    await asyncio.sleep(0.3)
+    if rel not in FILES["sd"]:
+        return
+    src = "/sd" + rel
+    n = FILES["sd"][rel].count(b"\n")
+    await broadcast([f"[MSG:VizAutoBusy:{src}:0]"])
+    await asyncio.sleep(0.2)
+    FILES["sd"][rel + ".viz"] = f"VIZ {n} 0 10 0 10\n".encode()
+    await broadcast([f"[MSG:VizAutoReady:{src}.viz:{n}:0.000:10.000:0.000:10.000]"])
 
 
 def sample_gcode() -> str:
@@ -132,6 +156,12 @@ class Machine:
                 tgt[i] = float(m[1]) + self.wco[i]
             self.target, self.speed, self.state = tgt, 80, "Run"
             return ["ok"]
+        if u == "$PENDANT/STATUS":
+            return [f"[MSG:Pendant:{PENDANT[0]}]", "ok"]
+        if u.startswith("$VIZ/REFRESH="):
+            src = ln.split("=", 1)[1].strip()
+            asyncio.get_event_loop().create_task(auto_viz(src[3:] if src.startswith("/sd/") else src))
+            return ["ok"]
         if u.startswith("$VIZ/DELETE="):
             FILES["sd"].pop(ln.split("=", 1)[1].strip()[3:] + ".viz", None)
             return ["[MSG:VizDeleted]", "ok"]
@@ -193,6 +223,7 @@ async def ws_session(reader, writer):
                 await out([m.status()])
 
     t = asyncio.create_task(ticker())
+    SESSIONS.add(out)
     try:
         while True:
             b1, b2 = await reader.readexactly(2)
@@ -218,6 +249,7 @@ async def ws_session(reader, writer):
     except (asyncio.IncompleteReadError, ConnectionError):
         pass
     finally:
+        SESSIONS.discard(out)
         t.cancel()
         writer.close()
 
@@ -273,11 +305,19 @@ async def handle(reader, writer):
         elif method == "PUT":
             FILES[fs][p] = body
             reply(201)
+            if fs == "sd" and GCODE_RE.search(p):
+                asyncio.get_event_loop().create_task(auto_viz(p))
         elif method == "DELETE":
             FILES[fs].pop(p, None)
+            if fs == "sd":
+                FILES[fs].pop(p + ".viz", None)
             reply(204)
         else:
             reply(405)
+    elif path == "/mock/pendant":
+        PENDANT[0] = urllib.parse.parse_qs(urllib.parse.urlsplit(target).query).get("state", ["connected"])[0]
+        await broadcast([f"[MSG:Pendant:{PENDANT[0]}]"])
+        reply(200, b"ok")
     elif path in ("/", "/index.html"):
         reply(200, (ROOT / "dist" / "index.html").read_bytes(), "text/html")
     else:

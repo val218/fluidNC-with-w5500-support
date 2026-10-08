@@ -28,4 +28,11 @@ bool viz_generate(const std::string& nc_path);
 bool viz_exists(const std::string& nc_path);
 std::string viz_path(const std::string& nc_path);
 bool viz_handle_command(const char* line);
+
+// Background builds after uploads (paths like "/sd/dir/file.nc").
+//   $Viz/Refresh=/sd/file.nc  -> queue a rebuild; reports VizAutoBusy/VizAutoReady/VizAutoErr
+//   (Auto messages go to every channel except the pendant UART.)
+void viz_file_written(const std::string& path);  // any task; G-code on /sd only
+void viz_file_removed(const std::string& path);  // any task; deletes the .viz too
+void viz_poll();                                 // protocol task; runs one build when Idle
 void viz_init();

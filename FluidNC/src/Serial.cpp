@@ -37,6 +37,7 @@
   is received, pollChannels returns the associated channel spec.
 */
 
+#include <cstring>
 #include "Serial.h"
 #include "Machine/MachineConfig.h"
 #include "MotionControl.h"
@@ -183,6 +184,16 @@ size_t AllChannels::write(const uint8_t* buffer, size_t length) {
         channel->release_processing_ref();
     }
     return length;
+}
+void AllChannels::print_except(const char* s, Channel* skip) {
+    auto   channels = snapshot_channels();
+    size_t len      = strlen(s);
+    for (auto channel : channels) {
+        if (channel != skip) {
+            channel->write(reinterpret_cast<const uint8_t*>(s), len);
+        }
+        channel->release_processing_ref();
+    }
 }
 void AllChannels::print_msg(MsgLevel level, const char* msg) {
     auto channels = snapshot_channels();

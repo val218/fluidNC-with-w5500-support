@@ -185,7 +185,68 @@ $bye
 
 ---
 
-## 6. Troubleshooting
+## 6. SD card as a network drive (Windows)
+
+The board serves its SD card over the LAN with WebDAV at `http://<board-ip>/sd`.
+Windows can map that to a drive letter, which then shows up in **This PC** and
+reconnects at every sign-in. Copy G-code onto it like onto a USB stick.
+
+**One-time setup** (Command Prompt **as administrator**):
+
+```
+sc config WebClient start= auto
+net start WebClient
+reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters /v FileSizeLimitInBytes /t REG_DWORD /d 4294967295 /f
+net stop WebClient && net start WebClient
+```
+
+The `WebClient` service is the Windows WebDAV client. The registry line lifts
+its default 50 MB per-file limit (large G-code files fail to copy without it).
+
+**Map the drive** (normal Command Prompt, use your board's IP):
+
+```
+net use S: http://192.168.10.104/sd /persistent:yes
+```
+
+or in Explorer: **This PC → Map network drive**, Folder `http://192.168.10.104/sd`,
+tick **Reconnect at sign-in**.
+
+Give the board a fixed address (static IP, or a DHCP reservation on the router
+for its MAC) so the drive keeps working after a reboot.
+
+**Pendant previews are built automatically.** Whenever a G-code file
+(`.nc .gcode .gc .ngc .tap .cnc .g`) is written to the SD card, from this
+drive, the web UI or the classic UI, FluidNC queues `<file>.viz` for the TabUI
+pendant. The build waits until the machine is **Idle with no job running**
+(it pauses the controller for a moment), starts 1.5 s after the last write,
+and replaces any old `.viz`. Deleting or renaming a G-code file over the drive
+removes its `.viz`. You will see the `.viz` files next to your G-code in
+Explorer; leave them there. Progress shows in the web UI (and any console) as
+`[MSG:VizAutoBusy/VizAutoReady/VizAutoErr:...]`; these are not sent to the
+pendant, so they never replace what the pendant is showing.
+`$Viz/Refresh=/sd/file.nc` queues a rebuild by hand.
+
+Tips:
+- Don't copy big files while a job is running from the SD card; the card is
+  shared and the job has priority. The `.viz` build waits for the job anyway.
+- If Explorer is slow to open the drive, untick **Automatically detect
+  settings** in Internet Options → Connections → LAN settings (WebClient
+  waits for proxy auto-detection).
+- macOS: Finder → Go → Connect to Server → `http://192.168.10.104/sd`.
+  Linux: `davfs2` or your file manager's `dav://192.168.10.104/sd`.
+
+## 7. Pendant connection status
+
+`$Pendant/Status` answers `[MSG:Pendant:connected]`, `disconnected` or `none`
+(no `uart_channel1` configured), and every channel except the pendant's own
+gets that message when it changes. The web UI shows it as a badge in the
+header. Detection uses the pendant's link pings: an idle pendant sends `?`
+every 500 ms, so an unplugged pendant is noticed within about 3 s while the
+machine is idle. During a running job the board streams reports and the
+pendant may stay quiet, so the badge keeps its last state until the job ends.
+
+## 8. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|

@@ -62,6 +62,9 @@ public:
 
     void listChannels(Channel& out);
 
+    // Write to every channel except one (e.g. keep web-only notices off the pendant UART).
+    void print_except(const char* s, Channel* skip);
+
     Channel* find(const std::string_view name);
     Channel* poll(char* line);
 };

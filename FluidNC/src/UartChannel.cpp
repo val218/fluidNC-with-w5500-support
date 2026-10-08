@@ -142,10 +142,12 @@ void UartChannel::queueInput(const char* buf, size_t len) {
 }
 
 size_t UartChannel::write(uint8_t c) {
+    _last_tx_ms = millis();
     return _uart->write(c);
 }
 
 size_t UartChannel::write(const uint8_t* buffer, size_t length) {
+    _last_tx_ms = millis();
     // Replace \n with \r\n
     if (_addCR) {
         size_t rem      = length;
@@ -203,6 +205,10 @@ bool UartChannel::lineComplete(char* line, char c) {
 
 int UartChannel::read() {
     auto c = _uart->read();
+    if (c >= 0) {
+        _last_rx_ms = millis();
+        _rx_seen    = true;
+    }
     if (c == 0x11) {
         // 0x11 is XON.  If we receive that, it is a request to use software flow control
         // 0 0 means use default values from uart.cpp

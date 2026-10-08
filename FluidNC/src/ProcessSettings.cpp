@@ -4,6 +4,7 @@
 #include "Settings.h"
 #include "PathRetrace.h"   // PathRetrace plugin (TabUI pendant)
 #include "VizGenerator.h"  // VizGenerator plugin (TabUI pendant)
+#include "PendantLink.h"   // $Pendant/Status
 #include "Parameters.h"  // global_named_params
 
 #define CRASH_TEST
@@ -1355,6 +1356,11 @@ Error execute_line(const char* line, Channel& channel, AuthenticationLevel auth_
     // (defer like any other line).  While a job is active (e.g. paused in
     // Hold) the protocol task is tied up by the job, so - as in 4.0.x - run
     // them directly instead of rejecting them as "another interface busy".
+    // Read-only link state; answer right here on any task.
+    if (strcasecmp(line, "$Pendant/Status") == 0 || strcasecmp(line, "$Pendant") == 0) {
+        pendant_report(channel);
+        return Error::Ok;
+    }
     if (strncmp(line, "$Retrace/", 9) == 0 || strncmp(line, "$Viz/", 5) == 0) {
         if (!on_protocol_task && !Job::channel()) {
             return cmd_queue_defer(line, channel) ? Error::Deferred : Error::AnotherInterfaceBusy;

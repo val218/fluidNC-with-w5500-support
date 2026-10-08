@@ -57,12 +57,19 @@ with sync_playwright() as p:
     # upload G-code to SD -> pendant .viz is built, sidecar hidden from list
     page.set_input_files("#upload", files=[{"name": "upl.nc", "mimeType": "text/plain",
                                             "buffer": b"G0 X0 Y0\nG1 X10 Y10 F500\nG1 X0\n"}])
-    page.wait_for_selector("#log :text('VizReady:/sd/upl.nc.viz')", timeout=6000)
-    check(True, "upload to SD triggers $Viz/Generate and VizReady")
+    page.wait_for_selector("#log :text('VizAutoReady:/sd/upl.nc.viz')", timeout=6000)
+    check(True, "upload to SD -> firmware builds .viz (VizAutoReady)")
     page.wait_for_selector("#file-list li:has-text('upl.nc')", timeout=4000)
     names = page.eval_on_selector_all("#file-list .fname", "els => els.map(e => e.textContent)")
     check("upl.nc.viz" not in names, f".viz sidecar hidden from list: {names}")
     check(page.evaluate("document.querySelector('.brand-logo').naturalWidth > 0"), "logo image renders")
+    check(page.inner_text("#pendant") == "Pendant" and page.is_visible("#pendant"), "pendant badge shows connected")
+    page.evaluate("fetch('/mock/pendant?state=disconnected')")
+    page.wait_for_function("document.querySelector('#pendant').textContent === 'Pendant offline'", timeout=3000)
+    check(True, "pendant badge follows disconnect message")
+    page.screenshot(path=str(OUT / "desktop-pendant-offline.png"), clip={"x": 0, "y": 0, "width": 1600, "height": 70})
+    page.evaluate("fetch('/mock/pendant?state=connected')")
+    page.wait_for_function("document.querySelector('#pendant').textContent === 'Pendant'", timeout=3000)
     page.screenshot(path=str(OUT / "desktop-viz.png"))
     page.click("#file-list li:has-text('job1.nc')")
 

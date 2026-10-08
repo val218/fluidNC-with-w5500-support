@@ -71,9 +71,13 @@
       log(line, "msg");
       return;
     }
-    if ((m = /^\[MSG:Viz(Ready|Busy|Err|Deleted|Status):?(.*)\]$/.exec(line))) {
+    if ((m = /^\[MSG:Pendant:(\w+)\]$/.exec(line))) {
+      setPendant(m[1]);
+      return;
+    }
+    if ((m = /^\[MSG:Viz(Auto(?:Ready|Busy|Err)|Ready|Busy|Err|Deleted|Status):?(.*)\]$/.exec(line))) {
       onVizMsg(m[1], m[2]);
-      log(line, m[1] === "Err" ? "err" : "msg");
+      log(line, m[1].endsWith("Err") ? "err" : "msg");
       return;
     }
     if (/^Grbl |^\[VER:/.test(line) && line.startsWith("Grbl")) {
@@ -89,8 +93,17 @@
     const c = $("#conn");
     c.textContent = s === "open" ? "online" : s === "connecting" ? "connecting…" : "offline";
     c.className = "conn conn-" + s;
-    if (s !== "open") setStateBadge("Unknown");
+    if (s !== "open") { setStateBadge("Unknown"); $("#pendant").hidden = true; }
   });
+
+  // TabUI pendant on uart_channel1 ($Pendant/Status, plus a message on change)
+  function setPendant(st) {
+    const p = $("#pendant");
+    p.hidden = st === "none";
+    p.className = "pendant pendant-" + st;
+    p.textContent = st === "connected" ? "Pendant" : "Pendant offline";
+    p.title = st === "connected" ? "TabUI pendant connected (UART1)" : "No TabUI pendant on UART1";
+  }
 
   function setStateBadge(state) {
     const b = $("#state");
@@ -132,7 +145,6 @@
 
   Conn.on("status", (st) => {
     S.state = st.state;
-    if (st.state === "Idle") flushViz();
     setStateBadge(st.state);
     renderAlarm();
     if (st.wco) S.wco = st.wco;
@@ -310,47 +322,33 @@
   // FluidNC's VizGenerator builds it on request ($Viz/Generate=/sd/<file>). It runs
   // on the protocol task and blocks motion briefly, so requests wait for Idle.
   const GCODE_RE = /\.(nc|gcode|gc|ngc|tap|cnc|g)$/i;
-  const autoViz = $("#auto-viz");
-  autoViz.checked = Prefs.get("autoViz", true);
-  autoViz.onchange = () => Prefs.set("autoViz", autoViz.checked);
-  const vizQueue = [];
-  let vizActive = null;
-  let vizTimer = 0;
-
-  function queueViz(path) {
-    const p = "/sd" + path;
-    if (!vizQueue.includes(p) && vizActive !== p) vizQueue.push(p);
-    if (!idle()) toast("Pendant .viz will be built when the machine is idle");
-    flushViz();
-  }
-  function flushViz() {
-    if (vizActive || !vizQueue.length || !idle() || Conn.state !== "open") return;
-    vizActive = vizQueue.shift();
-    // Delete first: Generate returns the old .viz unchanged if one already exists.
-    Conn.sendLine("$Viz/Delete=" + vizActive, true);
-    Conn.sendLine("$Viz/Generate=" + vizActive, true);
-    vizTimer = setTimeout(() => { vizActive = null; flushViz(); }, 120000);
-  }
+  // The firmware queues the build itself whenever G-code lands on /sd (this UI,
+  // a mapped network drive, the classic UI). Its messages say VizAuto* so the
+  // pendant, which loads any "VizReady" it sees, is not disturbed.
   function onVizMsg(kind, rest) {
-    const name = (vizActive || rest).replace(/^.*\//, "").replace(/\.viz.*$/, "");
-    if (kind === "Busy") {
+    const auto = kind.startsWith("Auto");
+    const k = auto ? kind.slice(4) : kind;
+    const name = rest.split(":")[0].replace(/^.*\//, "").replace(/\.viz$/, "");
+    if (k === "Busy") {
       const pct = /:(\d+)$/.exec(rest);
-      if (pct) $("#viz-status").textContent = `Pendant .viz ${name}: ${pct[1]}%`;
+      $("#viz-status").textContent = `Pendant .viz ${name}` + (pct ? `: ${pct[1]}%` : "…");
       return;
     }
-    if (kind !== "Ready" && kind !== "Err") return;
-    clearTimeout(vizTimer);
+    if (k !== "Ready" && k !== "Err") return;
     $("#viz-status").textContent = "";
-    if (kind === "Ready") {
+    if (!auto) return;  // pendant's own requests: leave them to the pendant
+    if (k === "Ready") {
       const pts = rest.split(":")[1];
       toast(`Pendant .viz ready: ${name}` + (pts ? ` (${pts} points)` : ""));
     } else {
       toast("Pendant .viz failed: " + rest, true);
     }
-    vizActive = null;
-    setTimeout(flushViz, 200);
   }
-  $("#make-viz").onclick = () => S.sel && queueViz(S.sel.path);
+  $("#make-viz").onclick = () => {
+    if (!S.sel) return;
+    send("$Viz/Refresh=/sd" + S.sel.path);
+    if (!idle()) toast("Pendant .viz will be built when the machine is idle");
+  };
 
   // ------------------------------------------------------------- files
   const listEl = $("#file-list");
@@ -443,9 +441,6 @@
       try {
         await Files.upload(S.fs, S.dir, f, (p) => (bar.firstElementChild.style.width = (p * 100).toFixed(0) + "%"));
         toast("Uploaded " + f.name);
-        if (S.fs === "sd" && autoViz.checked && GCODE_RE.test(f.name)) {
-          queueViz((S.dir.endsWith("/") ? S.dir : S.dir + "/") + f.name);
-        }
       } catch (err) { toast(err.message, true); }
     }
     bar.hidden = true;
@@ -469,7 +464,6 @@
     try {
       await Files.putText(S.fs, S.sel.path, $("#editor-text").value);
       toast("Saved " + S.sel.name + (S.sel.name === "config.yaml" ? " - restart ($bye) to apply" : ""));
-      if (S.fs === "sd" && GCODE_RE.test(S.sel.name)) queueViz(S.sel.path);
       refresh();
     } catch (e) { toast(e.message, true); }
   });

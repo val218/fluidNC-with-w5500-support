@@ -46,6 +46,7 @@
 
 #include <AsyncTCP.h>
 #include "WebDAV.h"
+#include "VizGenerator.h"  // pendant .viz rebuild after SD uploads
 
 // Upper bound on concurrent WebSocket clients. Each client carries a WSChannel
 // (line-assembly std::string) plus an AsyncWebSocket send queue of up to
@@ -1497,12 +1498,14 @@ namespace WebUI {
     }
 
     void WebUI_Server::uploadEnd(AsyncWebServerRequest* request, size_t filesize) {
+        std::string done_path;
         //if file is open close it
         if (_uploadFile) {
             //            delete _uploadFile;
             // _uploadFile = nullptr;
 
             std::string pathname = _uploadFile->fpath();
+            done_path            = pathname;
 
             // Take the reference to the volume before closing the file, so the
             // mount count never drops to zero here.  Re-establishing it after
@@ -1549,6 +1552,8 @@ namespace WebUI {
         }
         if (_upload_status == UploadStatus::ONGOING) {
             _upload_status = UploadStatus::SUCCESSFUL;
+            // Legacy WebUI upload to the SD card: queue the pendant .viz rebuild.
+            viz_file_written(done_path);
         } else {
             _upload_status = UploadStatus::FAILED;
             pushError(request, ESP_ERROR_UPLOAD, "Upload error 8");
