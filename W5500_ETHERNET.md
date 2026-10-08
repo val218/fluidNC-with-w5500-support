@@ -8,7 +8,26 @@ everything works when the network is Ethernet instead of WiFi:
 - mDNS (`http://fluidnc.local`), OTA and notifications start on Ethernet
 - `$Ethernet/Setup=IP=... MSK=... GW=...` and `$Sta/Setup=...` parse correctly
 
-Tested on a dpCREATOR R2 (ESP32-S3-WROOM-1-N16R8) with an external W5500 module.
+plus dpCREATOR additions:
+
+- dpCREATOR WebUI (3D toolpath view, DRO, jog, files, console) built into the firmware
+- SD card usable as a **network drive** on your PC, with TabUI pendant `.viz`
+  previews built automatically for every G-code file copied onto it
+- TabUI pendant connection status (`$Pendant/Status`, badge in the WebUI)
+- PathRetrace / VizGenerator commands for the TabUI pendant
+
+Tested on a dpCREATOR R2/R3 (ESP32-S3-WROOM-1-N16R8).
+
+**Contents**
+
+1. [Get the firmware](#1-get-the-firmware)
+2. [Wiring](#2-wiring)
+3. [config.yaml](#3-configyaml)
+4. [Switch FluidNC to Ethernet](#4-switch-fluidnc-to-ethernet)
+5. [Connect gSender over Ethernet](#5-connect-gsender-over-ethernet)
+6. [SD card as a network drive (Windows)](#6-sd-card-as-a-network-drive-windows)
+7. [Pendant connection status](#7-pendant-connection-status)
+8. [Troubleshooting](#8-troubleshooting)
 
 ---
 
