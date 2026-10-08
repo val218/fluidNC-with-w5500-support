@@ -251,7 +251,29 @@ The board serves its SD card over the LAN with WebDAV at `http://<board-ip>/sd`.
 Windows can map that to a drive letter, which then shows up in **This PC** and
 reconnects at every sign-in. Copy G-code onto it like onto a USB stick.
 
-**One-time setup** (Command Prompt **as administrator**):
+### Easiest: setup script
+
+1. Download [`tools/windows/dpcreator-sd-drive.cmd`](https://raw.githubusercontent.com/val218/fluidNC-with-w5500-support/fluidnc-4.1.1-w5500/tools/windows/dpcreator-sd-drive.cmd)
+   (right-click the link → *Save link as…*).
+2. **Double-click it** (do *not* use "Run as administrator"). If Windows says
+   *"Windows protected your PC"*, click **More info → Run anyway**.
+3. Enter the board's IP (Enter = `192.168.10.104`) and answer **Yes** on the
+   one admin prompt.
+
+It turns on the Windows WebDAV client, lifts the 50 MB file limit, maps the
+SD card as **S:** named **dpCREATOR SD**, and adds a hidden sign-in task that
+reconnects it after every restart. Run it again if the board's IP changes.
+Other drive letter: `dpcreator-sd-drive.cmd 192.168.10.104 Z`.
+Undo everything: `dpcreator-sd-drive.cmd remove`.
+
+**Show it together with C:, D: …** Windows always lists mapped drives under
+*Network locations* in This PC. To have one list: open **This PC**, right-click
+an empty area → **Group by → (None)**.
+
+### Manual setup
+
+**One-time setup** (Command Prompt **as administrator**: Start → type `cmd` →
+right-click → *Run as administrator*):
 
 ```
 sc config WebClient start= auto
@@ -263,7 +285,8 @@ net stop WebClient && net start WebClient
 The `WebClient` service is the Windows WebDAV client. The registry line lifts
 its default 50 MB per-file limit (large G-code files fail to copy without it).
 
-**Map the drive** (normal Command Prompt, use your board's IP):
+**Map the drive** (a **normal** Command Prompt, not the admin one: a drive
+mapped as administrator does not show in your Explorer; use your board's IP):
 
 ```
 net use S: http://192.168.10.104/sd /persistent:yes
@@ -288,6 +311,10 @@ pendant, so they never replace what the pendant is showing.
 `$Viz/Refresh=/sd/file.nc` queues a rebuild by hand.
 
 Tips:
+- Clicking the board under Explorer's **Network** folder, or typing
+  `\\192.168.10.104`, gives a "problem accessing" error: that is Windows file
+  sharing (SMB), which FluidNC does not have. Use the S: drive, or
+  `\\192.168.10.104@80\sd` in the address bar.
 - Don't copy big files while a job is running from the SD card; the card is
   shared and the job has priority. The `.viz` build waits for the job anyway.
 - If Explorer is slow to open the drive, untick **Automatically detect
