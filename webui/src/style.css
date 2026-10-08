@@ -6,8 +6,8 @@
   --line: #24365c;
   --text: #e8edf6;
   --muted: #8b9bb8;
-  --accent: #f5c518;      /* silkscreen yellow */
-  --accent-ink: #1a1400;
+  --accent: #26acff;      /* dpCREATOR brand blue (logo) */
+  --accent-ink: #001a2e;
   --ok: #3fb950;
   --run: #2f81f7;
   --warn: #f0883e;
@@ -30,11 +30,11 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
 
 /* ---------- header ---------- */
 .top {
-  display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+  display: flex; align-items: center; gap: 12px; padding: 5px 14px;
   background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap;
 }
-.brand { font-weight: 800; letter-spacing: .04em; font-size: 18px; }
-.brand-dp { color: var(--accent); font-style: italic; }
+.brand { display: flex; align-items: center; }
+.brand-logo { height: 46px; width: auto; display: block; }
 .brand-sub { color: var(--muted); font-weight: 600; font-size: 12px; margin-left: 6px; }
 .state { padding: 3px 12px; border-radius: 999px; font-weight: 700; font-size: 13px; background: var(--panel-2); }
 .state-idle { background: #1f3d2a; color: #7ee787; }
@@ -58,7 +58,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
   grid-template-columns: minmax(320px, 360px) 1fr minmax(300px, 360px);
   grid-template-rows: 1fr 1fr;
   grid-template-areas: "control viewer files" "control viewer console";
-  height: calc(100vh - 80px);
+  height: calc(100vh - 92px);
 }
 .control { grid-area: control; overflow-y: auto; }
 .viewer { grid-area: viewer; display: flex; flex-direction: column; min-height: 0; }
@@ -99,6 +99,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
   .files.shown, .console.shown { min-height: calc(100vh - 150px); }
   .top { padding: 6px 10px; gap: 8px; }
   .legacy, .brand-sub { display: none; }
+  .brand-logo { height: 34px; }
 }
 
 /* ---------- buttons ---------- */
@@ -173,10 +174,12 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .file-list { list-style: none; margin: 8px 0 0; padding: 0; overflow-y: auto; flex: 1; border-top: 1px solid var(--line); }
 .file-list li { display: flex; gap: 8px; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; align-items: center; }
 .file-list li:hover { background: var(--panel-2); }
-.file-list li.sel { background: #2b2508; outline: 1px solid var(--accent); }
+.file-list li.sel { background: #0d2a45; outline: 1px solid var(--accent); }
 .file-list .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-list .fsize { color: var(--muted); font-size: 12px; font-family: var(--mono); }
 .file-list .dir .fname::before { content: "📁 "; }
+.viz-status { font-size: 12px; color: var(--accent); min-height: 0; }
+.viz-status:not(:empty) { padding-top: 4px; }
 .file-run { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 6px; }
 .file-run-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 

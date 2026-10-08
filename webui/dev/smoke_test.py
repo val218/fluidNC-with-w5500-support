@@ -54,6 +54,18 @@ with sync_playwright() as p:
     page.wait_for_selector("#log .err", timeout=4000)
     check("Unsupported G-code" in page.inner_text("#log"), "error code described in console")
 
+    # upload G-code to SD -> pendant .viz is built, sidecar hidden from list
+    page.set_input_files("#upload", files=[{"name": "upl.nc", "mimeType": "text/plain",
+                                            "buffer": b"G0 X0 Y0\nG1 X10 Y10 F500\nG1 X0\n"}])
+    page.wait_for_selector("#log :text('VizReady:/sd/upl.nc.viz')", timeout=6000)
+    check(True, "upload to SD triggers $Viz/Generate and VizReady")
+    page.wait_for_selector("#file-list li:has-text('upl.nc')", timeout=4000)
+    names = page.eval_on_selector_all("#file-list .fname", "els => els.map(e => e.textContent)")
+    check("upl.nc.viz" not in names, f".viz sidecar hidden from list: {names}")
+    check(page.evaluate("document.querySelector('.brand-logo').naturalWidth > 0"), "logo image renders")
+    page.screenshot(path=str(OUT / "desktop-viz.png"))
+    page.click("#file-list li:has-text('job1.nc')")
+
     # run job
     page.on("dialog", lambda d: d.accept())
     page.click("#run")

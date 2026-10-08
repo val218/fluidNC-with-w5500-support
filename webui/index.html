@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b1426">
 <title>dpCREATOR CNC</title>
+<link rel="icon" type="image/png" href="__FAVICON__">
 <style>/*__CSS__*/</style>
 </head>
 <body>
 <header class="top">
-  <div class="brand"><span class="brand-dp">dp</span>CREATOR<span class="brand-sub">CNC</span></div>
+  <div class="brand"><img class="brand-logo" src="__LOGO__" alt="dpCREATOR.EU"><span class="brand-sub">CNC</span></div>
   <div id="state" class="state state-unknown">--</div>
   <div id="alarm" class="alarm" hidden></div>
   <div class="top-right">
@@ -142,9 +143,11 @@
     <div class="file-actions">
       <label class="btn">Upload<input type="file" id="upload" hidden multiple></label>
       <button class="btn" id="refresh">Refresh</button>
+      <label class="switch" title="After uploading G-code to the SD card, build the .viz preview file the TabUI pendant shows"><input type="checkbox" id="auto-viz" checked> Pendant .viz</label>
       <span id="file-path" class="muted"></span>
     </div>
     <div id="upload-progress" class="progress small" hidden><div></div></div>
+    <div id="viz-status" class="viz-status"></div>
     <ul class="file-list" id="file-list"></ul>
     <div class="file-run" id="file-run" hidden>
       <div><b id="sel-name"></b> <span class="muted" id="sel-size"></span></div>
@@ -152,6 +155,7 @@
         <button class="btn accent" id="run">▶ Run</button>
         <button class="btn" id="preview">Preview</button>
         <button class="btn" id="edit">Edit</button>
+        <button class="btn" id="make-viz" title="Rebuild the TabUI pendant preview (.viz) for this file">Pendant .viz</button>
         <button class="btn danger" id="del">Delete</button>
       </div>
     </div>

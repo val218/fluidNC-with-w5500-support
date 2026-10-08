@@ -28,6 +28,19 @@ Updating only the UI on a running board: upload `webui-index.html.gz` as
 | Run job | `$SD/Run=/file.nc` or `$LocalFS/Run=/file.nc` |
 | Progress | `SD:<percent>,<file>` field of the status report |
 
+## TabUI pendant previews (.viz)
+
+The pendant shows a preview from `<file>.viz` stored next to the G-code on
+the SD card. With **Pendant .viz** ticked (default, remembered per browser),
+every G-code file uploaded to the SD card, or saved from the editor, gets one
+built automatically: the UI sends `$Viz/Delete=/sd/<file>` then
+`$Viz/Generate=/sd/<file>` and shows `VizBusy`/`VizReady`/`VizErr` as they
+arrive. Generation pauses the controller briefly, so it only runs while the
+machine is Idle; requests made during a job wait until it finishes. The
+**Pendant .viz** button on a selected file rebuilds it by hand (useful for
+files copied onto the card with a PC). `.viz` files are hidden from the list
+and deleted together with their G-code file.
+
 ## Developing without a board
 
 ```
@@ -39,4 +52,6 @@ python3 webui/dev/smoke_test.py          # headless checks + screenshots
 Open the built page against a real board from your PC with
 `webui/dist/index.html?host=192.168.10.104`.
 
-Colours are CSS variables at the top of `src/style.css`.
+Colours are CSS variables at the top of `src/style.css` (accent = brand blue
+`#26acff`). The header logo and favicon are `assets/logo.png` and
+`assets/favicon.png`, inlined by the build.

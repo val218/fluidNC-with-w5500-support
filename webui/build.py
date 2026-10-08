@@ -8,6 +8,7 @@ All sources are inlined into one index.html, which is gzipped for FluidNC.
     python3 webui/build.py --install       # also copy into FluidNC/data/
 """
 import argparse
+import base64
 import gzip
 import pathlib
 import shutil
@@ -30,6 +31,10 @@ def version() -> str:
     return rev
 
 
+def data_uri(path: pathlib.Path) -> str:
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
 def build() -> pathlib.Path:
     template = (ROOT / "index.html").read_text(encoding="utf-8")
     css = (SRC / "style.css").read_text(encoding="utf-8")
@@ -46,6 +51,8 @@ def build() -> pathlib.Path:
         .replace("/*__THREE__*/", three)
         .replace("/*__APP__*/", app)
         .replace("__VERSION__", version())
+        .replace("__LOGO__", data_uri(ROOT / "assets" / "logo.png"))
+        .replace("__FAVICON__", data_uri(ROOT / "assets" / "favicon.png"))
     )
     DIST.mkdir(exist_ok=True)
     out = DIST / "index.html"

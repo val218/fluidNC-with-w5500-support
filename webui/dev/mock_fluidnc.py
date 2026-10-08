@@ -132,6 +132,17 @@ class Machine:
                 tgt[i] = float(m[1]) + self.wco[i]
             self.target, self.speed, self.state = tgt, 80, "Run"
             return ["ok"]
+        if u.startswith("$VIZ/DELETE="):
+            FILES["sd"].pop(ln.split("=", 1)[1].strip()[3:] + ".viz", None)
+            return ["[MSG:VizDeleted]", "ok"]
+        if u.startswith("$VIZ/GENERATE="):
+            src = ln.split("=", 1)[1].strip()
+            rel = src[3:] if src.startswith("/sd/") else src
+            if rel not in FILES["sd"]:
+                return [f"[MSG:VizErr:cannot open:{src}]", "ok"]
+            n = FILES["sd"][rel].count(b"\n")
+            FILES["sd"][rel + ".viz"] = f"VIZ {n} 0 10 0 10\n".encode()
+            return [f"[MSG:VizBusy:{src}:50]", f"[MSG:VizReady:{src}.viz:{n}:0.000:10.000:0.000:10.000]", "ok"]
         if u == "BAD":
             return ["error:20"]
         return ["ok"]

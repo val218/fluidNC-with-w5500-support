@@ -71,6 +71,11 @@
       log(line, "msg");
       return;
     }
+    if ((m = /^\[MSG:Viz(Ready|Busy|Err|Deleted|Status):?(.*)\]$/.exec(line))) {
+      onVizMsg(m[1], m[2]);
+      log(line, m[1] === "Err" ? "err" : "msg");
+      return;
+    }
     if (/^Grbl |^\[VER:/.test(line) && line.startsWith("Grbl")) {
       log(line, "msg");
       setTimeout(Conn.resync, 300);
@@ -127,6 +132,7 @@
 
   Conn.on("status", (st) => {
     S.state = st.state;
+    if (st.state === "Idle") flushViz();
     setStateBadge(st.state);
     renderAlarm();
     if (st.wco) S.wco = st.wco;
@@ -299,6 +305,53 @@
     $("#progress-bar").style.width = "0%";
   }
 
+  // ------------------------------------------------------------- TabUI pendant .viz
+  // The pendant shows a preview from "<file>.viz" next to the G-code on the SD card.
+  // FluidNC's VizGenerator builds it on request ($Viz/Generate=/sd/<file>). It runs
+  // on the protocol task and blocks motion briefly, so requests wait for Idle.
+  const GCODE_RE = /\.(nc|gcode|gc|ngc|tap|cnc|g)$/i;
+  const autoViz = $("#auto-viz");
+  autoViz.checked = Prefs.get("autoViz", true);
+  autoViz.onchange = () => Prefs.set("autoViz", autoViz.checked);
+  const vizQueue = [];
+  let vizActive = null;
+  let vizTimer = 0;
+
+  function queueViz(path) {
+    const p = "/sd" + path;
+    if (!vizQueue.includes(p) && vizActive !== p) vizQueue.push(p);
+    if (!idle()) toast("Pendant .viz will be built when the machine is idle");
+    flushViz();
+  }
+  function flushViz() {
+    if (vizActive || !vizQueue.length || !idle() || Conn.state !== "open") return;
+    vizActive = vizQueue.shift();
+    // Delete first: Generate returns the old .viz unchanged if one already exists.
+    Conn.sendLine("$Viz/Delete=" + vizActive, true);
+    Conn.sendLine("$Viz/Generate=" + vizActive, true);
+    vizTimer = setTimeout(() => { vizActive = null; flushViz(); }, 120000);
+  }
+  function onVizMsg(kind, rest) {
+    const name = (vizActive || rest).replace(/^.*\//, "").replace(/\.viz.*$/, "");
+    if (kind === "Busy") {
+      const pct = /:(\d+)$/.exec(rest);
+      if (pct) $("#viz-status").textContent = `Pendant .viz ${name}: ${pct[1]}%`;
+      return;
+    }
+    if (kind !== "Ready" && kind !== "Err") return;
+    clearTimeout(vizTimer);
+    $("#viz-status").textContent = "";
+    if (kind === "Ready") {
+      const pts = rest.split(":")[1];
+      toast(`Pendant .viz ready: ${name}` + (pts ? ` (${pts} points)` : ""));
+    } else {
+      toast("Pendant .viz failed: " + rest, true);
+    }
+    vizActive = null;
+    setTimeout(flushViz, 200);
+  }
+  $("#make-viz").onclick = () => S.sel && queueViz(S.sel.path);
+
   // ------------------------------------------------------------- files
   const listEl = $("#file-list");
   $$("#fs button").forEach((b) => (b.onclick = () => {
@@ -320,6 +373,7 @@
           el("span", { class: "fname" }, "..")));
       }
       for (const it of items) {
+        if (!it.dir && /\.viz(\.tmp)?$/i.test(it.name)) continue; // pendant preview sidecars
         const li = el("li", { class: it.dir ? "dir" : "" },
           el("span", { class: "fname" }, it.name),
           el("span", { class: "fsize" }, it.dir ? "" : fmtSize(it.size)));
@@ -346,7 +400,8 @@
     $("#sel-size").textContent = fmtSize(it.size);
     const isText = /\.(nc|gcode|gc|ngc|tap|txt|yaml|yml|json|cnc|g|macro)$/i.test(it.name);
     $("#edit").disabled = !isText || it.size > 256 * 1024;
-    $("#preview").disabled = !/\.(nc|gcode|gc|ngc|tap|cnc|g)$/i.test(it.name);
+    $("#preview").disabled = !GCODE_RE.test(it.name);
+    $("#make-viz").hidden = S.fs !== "sd" || !GCODE_RE.test(it.name);
   }
 
   function previewSelected() {
@@ -370,7 +425,12 @@
   $("#del").onclick = async () => {
     const it = S.sel;
     if (!it || !confirm(`Delete ${it.name}?`)) return;
-    try { await Files.remove(S.fs, it.path); toast("Deleted " + it.name); refresh(); }
+    try {
+      await Files.remove(S.fs, it.path);
+      if (S.fs === "sd" && GCODE_RE.test(it.name)) await Files.remove("sd", it.path + ".viz").catch(() => {});
+      toast("Deleted " + it.name);
+      refresh();
+    }
     catch (e) { toast(e.message, true); }
   };
 
@@ -383,6 +443,9 @@
       try {
         await Files.upload(S.fs, S.dir, f, (p) => (bar.firstElementChild.style.width = (p * 100).toFixed(0) + "%"));
         toast("Uploaded " + f.name);
+        if (S.fs === "sd" && autoViz.checked && GCODE_RE.test(f.name)) {
+          queueViz((S.dir.endsWith("/") ? S.dir : S.dir + "/") + f.name);
+        }
       } catch (err) { toast(err.message, true); }
     }
     bar.hidden = true;
@@ -406,6 +469,7 @@
     try {
       await Files.putText(S.fs, S.sel.path, $("#editor-text").value);
       toast("Saved " + S.sel.name + (S.sel.name === "config.yaml" ? " - restart ($bye) to apply" : ""));
+      if (S.fs === "sd" && GCODE_RE.test(S.sel.name)) queueViz(S.sel.path);
       refresh();
     } catch (e) { toast(e.message, true); }
   });
