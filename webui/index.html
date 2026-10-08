@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1426">
+<title>dpCREATOR CNC</title>
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="brand-dp">dp</span>CREATOR<span class="brand-sub">CNC</span></div>
+  <div id="state" class="state state-unknown">--</div>
+  <div id="alarm" class="alarm" hidden></div>
+  <div class="top-right">
+    <span id="job" class="job" hidden></span>
+    <span id="conn" class="conn conn-closed" title="Connection">offline</span>
+    <a class="legacy" href="/legacy.html" title="Original FluidNC WebUI">Classic UI</a>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-view="control" class="active">Control</button>
+  <button data-view="viewer">3D View</button>
+  <button data-view="files">Files</button>
+  <button data-view="console">Console</button>
+</nav>
+
+<main class="layout">
+  <!-- ======== LEFT: DRO + jog ======== -->
+  <section class="panel control" data-pane="control">
+    <div class="panel-head">
+      <h2>Position</h2>
+      <select id="wcs" title="Work coordinate system">
+        <option>G54</option><option>G55</option><option>G56</option>
+        <option>G57</option><option>G58</option><option>G59</option>
+      </select>
+    </div>
+    <div class="dro" id="dro"></div>
+    <div class="dro-actions">
+      <button data-cmd="zero-all" class="btn">Zero all</button>
+      <button data-cmd="goto-xy0" class="btn">Go XY0</button>
+      <button data-cmd="goto-z0" class="btn">Go Z0</button>
+    </div>
+
+    <div class="panel-head"><h2>Jog</h2>
+      <label class="switch" title="Keyboard jogging: arrows = X/Y, PgUp/PgDn = Z">
+        <input type="checkbox" id="kbjog"><span>Keys</span>
+      </label>
+    </div>
+    <div class="jog">
+      <div class="jog-xy">
+        <button class="j" data-jog="X-1 Y1">↖</button>
+        <button class="j" data-jog="Y1">Y+</button>
+        <button class="j" data-jog="X1 Y1">↗</button>
+        <button class="j" data-jog="X-1">X−</button>
+        <button class="j stop" data-cmd="jog-cancel" title="Stop jog">■</button>
+        <button class="j" data-jog="X1">X+</button>
+        <button class="j" data-jog="X-1 Y-1">↙</button>
+        <button class="j" data-jog="Y-1">Y−</button>
+        <button class="j" data-jog="X1 Y-1">↘</button>
+      </div>
+      <div class="jog-z">
+        <button class="j" data-jog="Z1">Z+</button>
+        <button class="j" data-jog="Z-1">Z−</button>
+      </div>
+      <div class="jog-a">
+        <button class="j" data-jog="A1">A+</button>
+        <button class="j" data-jog="A-1">A−</button>
+      </div>
+    </div>
+    <div class="jog-opts">
+      <div class="seg" id="step">
+        <button data-step="cont" title="Hold to jog">Cont</button>
+        <button data-step="0.01">0.01</button>
+        <button data-step="0.1">0.1</button>
+        <button data-step="1" class="active">1</button>
+        <button data-step="10">10</button>
+        <button data-step="100">100</button>
+      </div>
+      <label class="field">Feed <input id="jogfeed" type="number" min="10" step="10" value="1500"> mm/min</label>
+    </div>
+
+    <div class="panel-head"><h2>Machine</h2></div>
+    <div class="grid-btn">
+      <button data-cmd="home" class="btn">Home</button>
+      <button data-cmd="unlock" class="btn">Unlock</button>
+      <button data-cmd="reset" class="btn warn">Reset</button>
+      <button data-cmd="hold" class="btn">Hold</button>
+      <button data-cmd="resume" class="btn">Resume</button>
+      <button data-cmd="stop" class="btn danger">Stop</button>
+    </div>
+
+    <div class="panel-head"><h2>Spindle &amp; coolant</h2></div>
+    <div class="spindle">
+      <label class="field">S <input id="rpm" type="number" min="0" step="100" value="12000"></label>
+      <button data-cmd="spindle-cw" class="btn">CW</button>
+      <button data-cmd="spindle-off" class="btn">Off</button>
+      <button data-cmd="flood" class="btn" id="btn-flood">Flood</button>
+      <button data-cmd="mist" class="btn" id="btn-mist">Mist</button>
+    </div>
+
+    <div class="panel-head"><h2>Overrides</h2></div>
+    <div class="ovr">
+      <div class="ovr-row"><span>Feed</span><button data-ovr="0x92">−10</button><button data-ovr="0x94">−1</button>
+        <b id="ov-f">100%</b><button data-ovr="0x93">+1</button><button data-ovr="0x91">+10</button><button data-ovr="0x90">100</button></div>
+      <div class="ovr-row"><span>Rapid</span><button data-ovr="0x97">25</button><button data-ovr="0x96">50</button>
+        <b id="ov-r">100%</b><button data-ovr="0x95">100</button></div>
+      <div class="ovr-row"><span>Spindle</span><button data-ovr="0x9B">−10</button><button data-ovr="0x9D">−1</button>
+        <b id="ov-s">100%</b><button data-ovr="0x9C">+1</button><button data-ovr="0x9A">+10</button><button data-ovr="0x99">100</button></div>
+    </div>
+    <div class="status-line" id="feedspeed">F 0 · S 0</div>
+    <div class="pins" id="pins"></div>
+  </section>
+
+  <!-- ======== CENTER: 3D viewer ======== -->
+  <section class="panel viewer" data-pane="viewer">
+    <div class="viewer-bar">
+      <div class="seg" id="views">
+        <button data-v="iso" class="active">3D</button>
+        <button data-v="top">Top</button>
+        <button data-v="front">Front</button>
+        <button data-v="right">Side</button>
+      </div>
+      <button class="btn small" id="fit">Fit</button>
+      <span class="viewer-file" id="viewer-file">No file loaded</span>
+    </div>
+    <div class="viewer-canvas" id="viewer"></div>
+    <div class="viewer-info" id="viewer-info"></div>
+    <div class="progress"><div id="progress-bar"></div></div>
+  </section>
+
+  <!-- ======== RIGHT: files + console ======== -->
+  <section class="panel files" data-pane="files">
+    <div class="panel-head">
+      <h2>Files</h2>
+      <div class="seg" id="fs">
+        <button data-fs="sd" class="active">SD card</button>
+        <button data-fs="flash">Flash</button>
+      </div>
+    </div>
+    <div class="file-actions">
+      <label class="btn">Upload<input type="file" id="upload" hidden multiple></label>
+      <button class="btn" id="refresh">Refresh</button>
+      <span id="file-path" class="muted"></span>
+    </div>
+    <div id="upload-progress" class="progress small" hidden><div></div></div>
+    <ul class="file-list" id="file-list"></ul>
+    <div class="file-run" id="file-run" hidden>
+      <div><b id="sel-name"></b> <span class="muted" id="sel-size"></span></div>
+      <div class="file-run-btns">
+        <button class="btn accent" id="run">▶ Run</button>
+        <button class="btn" id="preview">Preview</button>
+        <button class="btn" id="edit">Edit</button>
+        <button class="btn danger" id="del">Delete</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel console" data-pane="console">
+    <div class="panel-head"><h2>Console</h2>
+      <label class="switch"><input type="checkbox" id="show-status"><span>Status</span></label>
+      <button class="btn small" id="clear-console">Clear</button>
+    </div>
+    <pre id="log" class="log"></pre>
+    <form id="cmd-form" class="cmd">
+      <input id="cmd" autocomplete="off" spellcheck="false" placeholder="G-code or $command, Enter to send">
+      <button class="btn accent">Send</button>
+    </form>
+  </section>
+</main>
+
+<dialog id="editor">
+  <form method="dialog" class="editor">
+    <div class="panel-head"><h2 id="editor-title">Edit</h2></div>
+    <textarea id="editor-text" spellcheck="false"></textarea>
+    <div class="editor-btns">
+      <button value="cancel" class="btn">Cancel</button>
+      <button value="save" class="btn accent" id="editor-save">Save</button>
+    </div>
+  </form>
+</dialog>
+<div id="toast" class="toast" hidden></div>
+<footer class="foot">dpCREATOR WebUI <span>__VERSION__</span> · FluidNC</footer>
+
+<script>/*__THREE__*/</script>
+<script>/*__APP__*/</script>
+</body>
+</html>

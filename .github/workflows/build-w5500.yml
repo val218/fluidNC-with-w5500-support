@@ -38,6 +38,9 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
 
+      - name: Build dpCREATOR WebUI into the filesystem image
+        run: python3 webui/build.py --install
+
       - name: Build firmware (wifi_s3)
         run: pio run -e wifi_s3
 
@@ -51,6 +54,7 @@ jobs:
           cp $B/firmware.bin $B/firmware.elf $B/bootloader.bin $B/partitions.bin out/
           cp $B/littlefs.bin out/ 2>/dev/null || true
           cp $B/merged-flash.bin out/ 2>/dev/null || true
+          cp webui/dist/index.html.gz out/webui-index.html.gz
           ls -l out
 
       - name: Decode backtrace
