@@ -92,7 +92,14 @@ namespace WebUI {
         NetSettingsModule(const char* name) : Module(name) {}
         void init() override {
             _hostname     = new HostnameSetting("Hostname", "ESP112", "Hostname", "fluidnc");
-            _network_type = new EnumSetting("Network type", WEBSET, WA, NULL, "network/type", NetworkTypeWiFi, &networkTypeOptions);
+#if MAX_N_ETH
+            // dpCREATOR boards ship with a W5500: Ethernet (DHCP by default) out of
+            // the box. Without an ethernet: section networkType() falls back to WiFi.
+            constexpr int defaultNetworkType = NetworkTypeEthernet;
+#else
+            constexpr int defaultNetworkType = NetworkTypeWiFi;
+#endif
+            _network_type = new EnumSetting("Network type", WEBSET, WA, NULL, "network/type", defaultNetworkType, &networkTypeOptions);
         }
     };
 

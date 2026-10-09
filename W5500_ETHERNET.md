@@ -20,6 +20,11 @@ Tested on a dpCREATOR R2/R3 (ESP32-S3-WROOM-1-N16R8).
 
 ## Quick start: turn on Ethernet
 
+A **fresh install** (`merged-flash.bin`, or after erasing settings) already
+starts with Ethernet on and DHCP, using the dpCREATOR config: plug in the
+cable and look up the IP in `$Ethernet/Status` or your router. The commands
+below are only needed to change that, or on a board that was set to WiFi.
+
 Send these over USB (serial console), one line at a time. `config.yaml` must
 contain the `ethernet:` section (see [section 3](#3-configyaml)), or the W5500
 won't start.
