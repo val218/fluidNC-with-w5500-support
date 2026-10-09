@@ -39,6 +39,31 @@ a selected file sends `$Viz/Refresh=/sd/<file>` to rebuild by hand.
 The header badge shows whether the TabUI pendant on UART1 is connected
 (`$Pendant/Status` on connect, then `[MSG:Pendant:...]` on change).
 
+## Job path while a job runs
+
+When a job starts (from this UI, the pendant or anywhere else) the viewer
+shows its path. While the machine is moving it only fetches the small pendant
+`<file>.viz` and draws that as a blue 2D outline: FluidNC avoids serving big
+files during motion, and the job is reading from the same card. The full 3D
+path loads by itself as soon as the machine stops (hold, end of job), or now
+with **Load path** (asks first). Files you have previewed before are cached
+and show at once.
+
+## Axis monitor
+
+The strip at the bottom shows a status light and the current velocity
+(mm/min) for every axis, and a 30 s chart of each axis' velocity, worked out
+from MPos in the status reports (`$RI=100`). Lights: green moving, orange
+hold/alarm, red limit switch active, grey stopped. **Link** blinks on every
+status report and shows the report rate; it turns red after 3 s without any.
+Click **Axis monitor** to fold it away.
+
+## PC drive
+
+Files → **PC drive** downloads `tools/windows/dpcreator-sd-drive.cmd` with this
+board's IP filled in (asked from FluidNC with `[ESP111]` if the page was
+opened by name). Double-click it on the PC to get the SD card as drive S:.
+
 ## Developing without a board
 
 ```

@@ -62,7 +62,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
   grid-template-columns: minmax(320px, 360px) 1fr minmax(300px, 360px);
   grid-template-rows: 1fr 1fr;
   grid-template-areas: "control viewer files" "control viewer console";
-  height: calc(100vh - 92px);
+  height: calc(100vh - 92px - var(--mon-h, 122px));
 }
 .control { grid-area: control; overflow-y: auto; }
 .viewer { grid-area: viewer; display: flex; flex-direction: column; min-height: 0; }
@@ -95,6 +95,8 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
     border-bottom: 2px solid transparent; font-weight: 600;
   }
   .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .monitor { margin: 0 8px; height: 96px; }
+  .mon-side { min-width: 150px; }
   .layout { display: block; padding: 8px; height: auto; flex: none; }
   .layout > .panel { display: none; }
   .layout > .panel.shown { display: flex; flex-direction: column; }
@@ -198,6 +200,31 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .log .st { color: #5c6e8f; }
 .cmd { display: flex; gap: 6px; margin-top: 8px; }
 .cmd input { flex: 1; font-family: var(--mono); }
+
+/* ---------- axis monitor (bottom strip) ---------- */
+.monitor {
+  display: flex; gap: 10px; margin: 0 10px; padding: 6px 10px; height: 112px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.monitor.collapsed { height: auto; }
+.monitor.collapsed .mon-chart, .monitor.collapsed .mon-axes, .monitor.collapsed .mon-link { display: none; }
+.mon-side { display: flex; flex-direction: column; gap: 3px; min-width: 190px; }
+.mon-toggle { background: none; border: 0; color: var(--muted); padding: 0; text-align: left; cursor: pointer;
+  font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+.mon-link, .mon-axis { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.mon-axes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.mon-axis b { width: 12px; }
+.mon-v { font-family: var(--mono); color: var(--text); min-width: 52px; text-align: right; }
+.mon-chart { flex: 1; min-width: 0; position: relative; }
+.mon-chart canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.led { width: 9px; height: 9px; border-radius: 50%; background: #3a4660; display: inline-block; flex: none; }
+.led-move { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.led-hold { background: var(--warn); }
+.led-alarm { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.led-limit { background: var(--err); box-shadow: 0 0 6px var(--err); }
+.mon-link .led.beat { animation: beat .35s ease-out; }
+.mon-link .led.dead { background: var(--err); }
+@keyframes beat { 0% { background: var(--accent); box-shadow: 0 0 8px var(--accent); } 100% { background: #3a4660; box-shadow: none; } }
 
 /* ---------- dialog / toast ---------- */
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); width: min(900px, 94vw); padding: 12px; }

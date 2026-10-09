@@ -5,6 +5,7 @@ rem ===========================================================================
 rem  dpCREATOR / FluidNC: show the board's SD card as a drive in This PC.
 rem
 rem  Double-click this file (do NOT "Run as administrator").
+rem  The WebUI (Files > PC drive) downloads a copy with your board IP filled in.
 rem    dpcreator-sd-drive.cmd                     asks for the board IP
 rem    dpcreator-sd-drive.cmd 192.168.10.104      board IP, drive S:
 rem    dpcreator-sd-drive.cmd 192.168.10.104 Z    board IP, drive Z:
@@ -18,6 +19,8 @@ rem   3. Adds a hidden sign-in task (Startup folder) that reconnects the drive.
 rem ===========================================================================
 
 set "DEFAULT_IP=192.168.10.104"
+rem ASK_IP=0: use DEFAULT_IP without asking (the WebUI download fills it in).
+set "ASK_IP=1"
 set "BOARD=%~1"
 set "LETTER=%~2"
 if "%LETTER%"=="" set "LETTER=S"
@@ -37,7 +40,7 @@ if not errorlevel 1 (
 
 if /i "%BOARD%"=="remove" goto :remove
 
-if "%BOARD%"=="" set /p "BOARD=Board IP address [%DEFAULT_IP%]: "
+if "%BOARD%"=="" if "%ASK_IP%"=="1" set /p "BOARD=Board IP address [%DEFAULT_IP%]: "
 if "%BOARD%"=="" set "BOARD=%DEFAULT_IP%"
 set "URL=http://%BOARD%/sd"
 

@@ -46,7 +46,13 @@
   }
 
   // ------------------------------------------------------------- incoming lines
+  let ipWaiter = null;  // [ESP111] answer for the PC-drive script
   Conn.on("line", (line) => {
+    if (ipWaiter && /^\d{1,3}(\.\d{1,3}){3}$/.test(line.trim())) {
+      ipWaiter(line.trim());
+      ipWaiter = null;
+      return;
+    }
     if (line[0] === "<") {
       if (showStatus.checked) log(line, "st");
       return;
@@ -75,7 +81,7 @@
       setPendant(m[1]);
       return;
     }
-    if ((m = /^\[MSG:Viz(Auto(?:Ready|Busy|Err)|Ready|Busy|Err|Deleted|Status):?(.*)\]$/.exec(line))) {
+    if ((m = /^\[MSG:Viz(Auto(?:Ready|Busy|Err|Queued)|Ready|Busy|Err|Deleted|Status):?(.*)\]$/.exec(line))) {
       onVizMsg(m[1], m[2]);
       log(line, m[1].endsWith("Err") ? "err" : "msg");
       return;
@@ -161,6 +167,7 @@
       row.classList.toggle("limit", st.pins.includes(AXES[i]));
     }
     Viewer.setTool(w[0], w[1], w[2]);
+    Monitor.status(st, m);
     $("#pins").textContent = st.pins ? "Inputs active: " + st.pins.split("").join(" ") : "";
 
     if (st.ov) {
@@ -181,10 +188,8 @@
     const running = st.sdPct !== undefined && !Number.isNaN(st.sdPct);
     const jobEl = $("#job");
     if (running) {
-      if (!S.job || S.job.file !== st.sdFile) {
-        S.job = { file: st.sdFile, start: Date.now() };
-        autoPreview(st.sdFile);
-      }
+      if (!S.job || S.job.file !== st.sdFile) S.job = { file: st.sdFile, start: Date.now() };
+      ensurePreview(st.sdFile);
       const pct = Math.max(0, Math.min(100, st.sdPct));
       const elapsed = (Date.now() - S.job.start) / 1000;
       const eta = pct > 0.5 ? (elapsed * (100 - pct)) / pct : NaN;
@@ -196,18 +201,11 @@
       // job finished or stopped
       if (idle()) {
         log(`Job ended: ${S.job.file} (${fmtTime((Date.now() - S.job.start) / 1000)})`, "msg");
+        if ($("#viewer-file").dataset.partial) ensurePreview(S.job.file);
         S.job = null;
         jobEl.hidden = true;
       }
     }
-  }
-
-  // When a job is started from elsewhere (pendant, other browser), show its path.
-  async function autoPreview(sdFile) {
-    if (!sdFile) return;
-    const path = sdFile.replace(/^\/sd/, "");
-    if (Viewer.job && $("#viewer-file").dataset.path === "sd:" + path) return;
-    try { await previewFile("sd", path); } catch (e) { /* preview is best-effort */ }
   }
 
   // ------------------------------------------------------------- machine buttons
@@ -298,24 +296,101 @@
   }));
   $("#fit").onclick = () => Viewer.fit();
 
-  async function previewFile(fs, path) {
+  // Parsed files are kept (last 3) so re-opening or running a file is instant.
+  const parsedCache = new Map();
+  const cacheKey = (fs, path) => fs + ":" + path;
+  const forget = (fs, path) => parsedCache.delete(cacheKey(fs, path));
+  const moving = () => ["Run", "Jog", "Home"].includes(S.state);
+
+  function showJob(job, key, partial) {
     const label = $("#viewer-file");
-    label.textContent = "Loading " + path + "…";
-    const text = await Files.getText(fs, path);
-    label.textContent = "Parsing " + path + "…";
-    const job = await Gcode.parse(text, {
-      onProgress: (f) => (label.textContent = `Parsing ${path}… ${Math.round(f * 100)}%`),
-    });
     Viewer.load(job);
-    label.textContent = path.split("/").pop();
-    label.dataset.path = fs + ":" + path;
+    const name = key.slice(key.indexOf(":") + 1).split("/").pop();
+    label.textContent = name + (partial ? " · 2D preview" : "");
+    label.dataset.path = key;
+    label.dataset.partial = partial ? "1" : "";
+    $("#load-full").hidden = !partial;
     const size = job.max.map((v, i) => v - job.min[i]);
-    $("#viewer-info").textContent =
-      `${size.map((v) => v.toFixed(1)).join(" × ")} mm · Z ${job.min[2].toFixed(2)}…${job.max[2].toFixed(2)}` +
-      ` · cut ${(job.feedLen / 1000).toFixed(2)} m · est. ${fmtTime(job.estMinutes * 60)}` +
-      (job.tools ? ` · ${job.tools} tool change(s)` : "");
+    $("#viewer-info").textContent = partial
+      ? `${size[0].toFixed(1)} × ${size[1].toFixed(1)} mm · 2D outline from the pendant .viz · ` +
+        "the full 3D path loads when the machine stops"
+      : `${size.map((v) => v.toFixed(1)).join(" × ")} mm · Z ${job.min[2].toFixed(2)}…${job.max[2].toFixed(2)}` +
+        ` · cut ${(job.feedLen / 1000).toFixed(2)} m · est. ${fmtTime(job.estMinutes * 60)}` +
+        (job.tools ? ` · ${job.tools} tool change(s)` : "");
+  }
+
+  async function previewFile(fs, path) {
+    const key = cacheKey(fs, path);
+    const label = $("#viewer-file");
+    let job = parsedCache.get(key);
+    if (!job) {
+      label.textContent = "Loading " + path + "…";
+      const text = await Files.getText(fs, path);
+      label.textContent = "Parsing " + path + "…";
+      job = await Gcode.parse(text, {
+        onProgress: (f) => (label.textContent = `Parsing ${path}… ${Math.round(f * 100)}%`),
+      });
+      parsedCache.set(key, job);
+      while (parsedCache.size > 3) parsedCache.delete(parsedCache.keys().next().value);
+    }
+    showJob(job, key, false);
     $("#progress-bar").style.width = "0%";
   }
+
+  // "/sd/a.nc" -> ["sd", "/a.nc"]; "/littlefs/a.nc" -> ["flash", "/a.nc"]
+  function jobFsPath(file) {
+    const m = /^\/(sd|littlefs|spiffs|localfs)(\/.*)$/i.exec(file);
+    if (!m) return ["sd", file.startsWith("/") ? file : "/" + file];
+    return [m[1].toLowerCase() === "sd" ? "sd" : "flash", m[2]];
+  }
+
+  // Make sure the running job's path is on screen. Called on every status
+  // report while a job runs; does at most one fetch at a time. While the
+  // machine moves it only fetches the small pendant .viz (FluidNC avoids
+  // serving big files mid-cut, and the job reads from the same card); the
+  // full 3D path is loaded as soon as the machine stops (hold, end of job).
+  let previewBusy = false, previewRetryAt = 0;
+  async function ensurePreview(file) {
+    if (!file || previewBusy || Date.now() < previewRetryAt) return;
+    const [fs, path] = jobFsPath(file);
+    const key = cacheKey(fs, path);
+    const cur = $("#viewer-file").dataset;
+    const shown = Viewer.job && cur.path === key;
+    if (shown && !cur.partial) return;
+    if (shown && moving()) return;  // 2D outline already up; wait for a stop
+    previewBusy = true;
+    try {
+      if (parsedCache.has(key) || !moving()) {
+        await previewFile(fs, path);
+      } else {
+        let job = null;
+        if (fs === "sd") job = Gcode.fromViz(await Files.getText("sd", path + ".viz").catch(() => ""));
+        if (job && job.feed.length) {
+          showJob(job, key, true);
+        } else {
+          Viewer.clear();
+          $("#viewer-file").textContent = key.split("/").pop();
+          $("#viewer-file").dataset.path = key;
+          $("#viewer-file").dataset.partial = "1";
+          $("#load-full").hidden = false;
+          $("#viewer-info").textContent = "No pendant .viz for this file - the path loads when the machine stops, or press Load path";
+        }
+      }
+    } catch (e) {
+      $("#viewer-info").textContent = "Could not load the job's path: " + e.message + " (retrying)";
+      previewRetryAt = Date.now() + 10000;
+    } finally {
+      previewBusy = false;
+    }
+  }
+  $("#load-full").onclick = () => {
+    const key = $("#viewer-file").dataset.path;
+    if (!key) return;
+    if (moving() && !confirm("Load the full path now? This reads the whole file from the SD card while the job is running from it; on large files it can slow the job. Otherwise it loads by itself when the machine stops.")) return;
+    const fs = key.slice(0, key.indexOf(":")), path = key.slice(key.indexOf(":") + 1);
+    previewBusy = true;
+    previewFile(fs, path).catch((e) => toast(e.message, true)).finally(() => (previewBusy = false));
+  };
 
   // ------------------------------------------------------------- TabUI pendant .viz
   // The pendant shows a preview from "<file>.viz" next to the G-code on the SD card.
@@ -329,9 +404,16 @@
     const auto = kind.startsWith("Auto");
     const k = auto ? kind.slice(4) : kind;
     const name = rest.split(":")[0].replace(/^.*\//, "").replace(/\.viz$/, "");
+    if (k === "Queued") {
+      $("#viz-status").textContent = moving() || S.job
+        ? `Pendant .viz ${name}: waiting until the machine stops / the job ends`
+        : `Pendant .viz ${name}: starting…`;
+      return;
+    }
     if (k === "Busy") {
       const pct = /:(\d+)$/.exec(rest);
-      $("#viz-status").textContent = `Pendant .viz ${name}` + (pct ? `: ${pct[1]}%` : "…");
+      $("#viz-status").textContent = `Building pendant .viz ${name}` + (pct ? `: ${pct[1]}%` : "…") +
+        " - the controller does not take commands until it is done";
       return;
     }
     if (k !== "Ready" && k !== "Err") return;
@@ -344,10 +426,43 @@
       toast("Pendant .viz failed: " + rest, true);
     }
   }
+  // ------------------------------------------------------------- PC drive script
+  // Downloads tools/windows/dpcreator-sd-drive.cmd with this board's IP filled
+  // in: double-click on the PC maps the SD card as drive S: (WebDAV over LAN).
+  const SD_DRIVE_CMD = __SD_DRIVE_CMD__;
+  function boardIp() {
+    const host = HOST.replace(/:\d+$/, "");
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return Promise.resolve(host);
+    // Opened by name (e.g. fluidnc.local): ask FluidNC for its IP.
+    return new Promise((resolve) => {
+      ipWaiter = resolve;
+      Conn.sendLine("[ESP111]", true);
+      setTimeout(() => { if (ipWaiter === resolve) { ipWaiter = null; resolve(host); } }, 2500);
+    });
+  }
+  $("#pc-drive").onclick = async () => {
+    const ip = await boardIp();
+    const text = SD_DRIVE_CMD
+      .replace(/set "DEFAULT_IP=[^"]*"/, `set "DEFAULT_IP=${ip}"`)
+      .replace(/set "ASK_IP=1"/, 'set "ASK_IP=0"');
+    const a = el("a", { href: URL.createObjectURL(new Blob([text], { type: "application/octet-stream" })),
+                         download: `dpcreator-sd-drive-${ip}.cmd` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast(`Downloaded the drive script for ${ip}: double-click it on your PC (not as administrator)`);
+  };
+
   $("#make-viz").onclick = () => {
-    if (!S.sel) return;
-    send("$Viz/Refresh=/sd" + S.sel.path);
-    if (!idle()) toast("Pendant .viz will be built when the machine is idle");
+    const it = S.sel;
+    if (!it) return;
+    const big = it.size > 2 * 1024 * 1024;
+    const msg =
+      `Build the TabUI pendant preview for ${it.name} (${fmtSize(it.size)})?\n\n` +
+      "The controller reads the whole file and does not take commands until it is done" +
+      (big ? " - for a file this size that can take a minute or more." : ".") +
+      "\nIt starts only while the machine is not moving and no job is running.";
+    if (!confirm(msg)) return;
+    send("$Viz/Refresh=/sd" + it.path);
   };
 
   // ------------------------------------------------------------- files
@@ -414,7 +529,7 @@
     if (!it) return;
     if (!idle()) return toast(`Can't start a job while ${S.state}`, true);
     if (!confirm(`Run ${it.name}?`)) return;
-    if (!(Viewer.job && $("#viewer-file").dataset.path === S.fs + ":" + it.path)) {
+    if (!(Viewer.job && $("#viewer-file").dataset.path === S.fs + ":" + it.path && !$("#viewer-file").dataset.partial)) {
       previewFile(S.fs, it.path).catch(() => {});
     }
     send(Files.runCommand(S.fs, it.path));
@@ -425,6 +540,7 @@
     if (!it || !confirm(`Delete ${it.name}?`)) return;
     try {
       await Files.remove(S.fs, it.path);
+      forget(S.fs, it.path);
       if (S.fs === "sd" && GCODE_RE.test(it.name)) await Files.remove("sd", it.path + ".viz").catch(() => {});
       toast("Deleted " + it.name);
       refresh();
@@ -440,6 +556,7 @@
       bar.hidden = false;
       try {
         await Files.upload(S.fs, S.dir, f, (p) => (bar.firstElementChild.style.width = (p * 100).toFixed(0) + "%"));
+        forget(S.fs, (S.dir.endsWith("/") ? S.dir : S.dir + "/") + f.name);
         toast("Uploaded " + f.name);
       } catch (err) { toast(err.message, true); }
     }
@@ -463,10 +580,24 @@
     if (dlg.returnValue !== "save" || !S.sel) return;
     try {
       await Files.putText(S.fs, S.sel.path, $("#editor-text").value);
+      forget(S.fs, S.sel.path);
       toast("Saved " + S.sel.name + (S.sel.name === "config.yaml" ? " - restart ($bye) to apply" : ""));
       refresh();
     } catch (e) { toast(e.message, true); }
   });
+
+  // ------------------------------------------------------------- axis monitor
+  Monitor.init($("#monitor"));
+  function setMonitor(open) {
+    $("#monitor").classList.toggle("collapsed", !open);
+    $("#mon-toggle").textContent = "Axis monitor " + (open ? "▾" : "▸");
+    document.documentElement.style.setProperty("--mon-h", open ? "122px" : "44px");
+    Monitor.setVisible(open);
+    Prefs.set("monitor", open);
+    requestAnimationFrame(() => Viewer.resize());
+  }
+  $("#mon-toggle").onclick = () => setMonitor($("#monitor").classList.contains("collapsed"));
+  setMonitor(Prefs.get("monitor", true));
 
   // ------------------------------------------------------------- phone tabs
   function showPane(name) {

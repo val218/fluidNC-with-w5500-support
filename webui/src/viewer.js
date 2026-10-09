@@ -106,7 +106,8 @@ const Viewer = (() => {
       const colors = new Float32Array(parsed.feed.length);
       const c = new THREE.Color();
       for (let i = 0; i < parsed.feed.length; i += 3) {
-        depthColor(parsed.feed[i + 2], zmin, zmax, c);
+        if (parsed.flat) c.set(0x26acff); // 2D .viz outline: brand blue
+        else depthColor(parsed.feed[i + 2], zmin, zmax, c);
         colors[i] = c.r; colors[i + 1] = c.g; colors[i + 2] = c.b;
       }
       baseColors = colors.slice();

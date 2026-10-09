@@ -163,5 +163,31 @@ const Gcode = (() => {
     }
   }
 
-  return { parse };
+  // A pendant ".viz" file (header line, then "x,y" per line, work coords) as a
+  // flat 2D job: small enough to fetch while a job is running from the card.
+  function fromViz(text) {
+    const Z = 0.2; // just above the grid so the outline does not vanish into it
+    const feed = new Grow(Float32Array), feedOff = new Grow(Uint32Array, 4096);
+    const min = [Infinity, Infinity, Z], max = [-Infinity, -Infinity, Z];
+    let px = null, py = null, n = 0, feedLen = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const c = line.indexOf(",");
+      if (c < 0) continue;
+      const x = parseFloat(line), y = parseFloat(line.slice(c + 1));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (px !== null && (x !== px || y !== py)) {
+        feed.push(px, py, Z, x, y, Z); feedOff.push(n); feedLen += Math.hypot(x - px, y - py);
+      }
+      if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+      if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+      px = x; py = y; n++;
+    }
+    if (!Number.isFinite(min[0])) { min.fill(0); max.fill(0); }
+    return {
+      feed: feed.done(), feedOff: feedOff.done(), rapid: new Float32Array(0), rapidOff: new Uint32Array(0),
+      min, max, bytes: n, lines: n, tools: 0, feedLen, rapidLen: 0, estMinutes: NaN, flat: true,
+    };
+  }
+
+  return { parse, fromViz };
 })();

@@ -125,6 +125,7 @@
         <button data-v="right">Side</button>
       </div>
       <button class="btn small" id="fit">Fit</button>
+      <button class="btn small" id="load-full" hidden title="Load the full 3D path of the running job now">Load path</button>
       <span class="viewer-file" id="viewer-file">No file loaded</span>
     </div>
     <div class="viewer-canvas" id="viewer"></div>
@@ -144,6 +145,7 @@
     <div class="file-actions">
       <label class="btn">Upload<input type="file" id="upload" hidden multiple></label>
       <button class="btn" id="refresh">Refresh</button>
+      <button class="btn" id="pc-drive" title="Download a Windows script that shows this SD card as drive S: on your PC">PC drive</button>
       <span id="file-path" class="muted"></span>
     </div>
     <div id="upload-progress" class="progress small" hidden><div></div></div>
@@ -173,6 +175,15 @@
     </form>
   </section>
 </main>
+
+<section class="monitor" id="monitor">
+  <div class="mon-side">
+    <button class="mon-toggle" id="mon-toggle" title="Show / hide the axis monitor">Axis monitor ▾</button>
+    <div class="mon-link" title="Blinks on every status report from the controller"><span class="led"></span> Link <span class="mon-rate muted">idle</span></div>
+    <div class="mon-axes"></div>
+  </div>
+  <div class="mon-chart"><canvas></canvas></div>
+</section>
 
 <dialog id="editor">
   <form method="dialog" class="editor">

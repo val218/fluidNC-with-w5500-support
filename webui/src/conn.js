@@ -145,7 +145,7 @@ const Conn = (() => {
 
   // Re-request auto reports and modal state (after a reset the firmware
   // prints its banner again and per-channel settings may be gone).
-  function resync() { sendLine("$RI=200", true); sendLine("$G", true); sendLine("$Pendant/Status", true); }
+  function resync() { sendLine("$RI=100", true); sendLine("$G", true); sendLine("$Pendant/Status", true); }
 
   return { connect, on, sendLine, realtime, resync, get state() { return state; } };
 })();

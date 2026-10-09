@@ -71,6 +71,41 @@ with sync_playwright() as p:
     page.evaluate("fetch('/mock/pendant?state=connected')")
     page.wait_for_function("document.querySelector('#pendant').textContent === 'Pendant'", timeout=3000)
     page.screenshot(path=str(OUT / "desktop-viz.png"))
+    # monitor strip present with one row per axis
+    check(page.locator(".mon-axis").count() == 4, "axis monitor has 4 axes")
+
+    # PC drive script download has the board IP filled in
+    with page.expect_download() as dl:
+        page.click("#pc-drive")
+    path = dl.value.path()
+    body = open(path, "rb").read().decode()
+    check('set "DEFAULT_IP=127.0.0.1"' in body and 'set "ASK_IP=0"' in body and "\r\n" in body,
+          "PC drive script: IP filled in, no prompt, CRLF")
+
+    # manual pendant .viz with confirmation
+    page.once("dialog", lambda d: d.accept())
+    page.click("#file-list li:has-text('job1.nc')")
+    page.click("#make-viz")
+    page.wait_for_selector("#log :text('VizAutoReady:/sd/job1.nc.viz')", timeout=6000)
+    check(True, "Pendant .viz button (confirmed) builds job1.nc.viz")
+
+    # job started elsewhere while another file is shown -> 2D .viz outline, full path when stopped
+    page.click("#file-list li:has-text('upl.nc')")
+    page.click("#preview")
+    page.wait_for_function("document.querySelector('#viewer-file').textContent === 'upl.nc'", timeout=6000)
+    page.set_input_files("#upload", files=[{"name": "big.nc", "mimeType": "text/plain",
+                                            "buffer": b"G0 X0 Y0\nG1 Z-1 F300\nG1 X40 Y0 F800\nG1 X40 Y30\nG1 X0 Y30\nG1 X0 Y0\n"}])
+    page.wait_for_selector("#log :text('VizAutoReady:/sd/big.nc.viz')", timeout=6000)
+    page.fill("#cmd", "$SD/Run=/big.nc")
+    page.press("#cmd", "Enter")
+    page.wait_for_function("document.querySelector('#viewer-file').textContent.includes('big.nc · 2D preview')", timeout=6000)
+    check(True, "running job from elsewhere shows 2D .viz outline while moving")
+    page.screenshot(path=str(OUT / "desktop-job-viz.png"))
+    page.click("button[data-cmd='stop']")
+    page.wait_for_function("document.querySelector('#viewer-file').textContent === 'big.nc'", timeout=8000)
+    check(True, "full 3D path loads once the machine stops")
+    page.wait_for_function("document.querySelector('#state').textContent === 'Idle'", timeout=5000)
+    page.wait_for_timeout(500)
     page.click("#file-list li:has-text('job1.nc')")
 
     # run job
@@ -80,6 +115,8 @@ with sync_playwright() as p:
     page.wait_for_timeout(2500)
     check("job1.nc" in page.inner_text("#job"), "job progress shown: " + page.inner_text("#job"))
     check(page.inner_text("#state") == "Run", "state Run during job")
+    moving = page.evaluate("[...document.querySelectorAll('.mon-axis .led')].some(l => l.classList.contains('led-move'))")
+    check(moving, "axis monitor shows moving axes during job")
     page.screenshot(path=str(OUT / "desktop-running.png"))
     page.click("button[data-cmd='hold']")
     page.wait_for_function("document.querySelector('#state').textContent.startsWith('Hold')", timeout=3000)

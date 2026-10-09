@@ -253,6 +253,10 @@ reconnects at every sign-in. Copy G-code onto it like onto a USB stick.
 
 ### Easiest: setup script
 
+**From the WebUI:** Files panel → **PC drive** downloads the script with your
+board's IP already filled in; double-click it on the PC (steps 2-3 below, no
+IP to type). Or:
+
 1. Download [`tools/windows/dpcreator-sd-drive.cmd`](https://raw.githubusercontent.com/val218/fluidNC-with-w5500-support/fluidnc-4.1.1-w5500/tools/windows/dpcreator-sd-drive.cmd)
    (right-click the link → *Save link as…*).
 2. **Double-click it** (do *not* use "Run as administrator"). If Windows says
@@ -301,14 +305,17 @@ for its MAC) so the drive keeps working after a reboot.
 **Pendant previews are built automatically.** Whenever a G-code file
 (`.nc .gcode .gc .ngc .tap .cnc .g`) is written to the SD card, from this
 drive, the web UI or the classic UI, FluidNC queues `<file>.viz` for the TabUI
-pendant. The build waits until the machine is **Idle with no job running**
-(it pauses the controller for a moment), starts 1.5 s after the last write,
+pendant. The build waits until **nothing moves and no job is running** (Idle, or
+Alarm right after power-up; the controller does not take commands while it
+reads the file), starts 1.5 s after the last write,
 and replaces any old `.viz`. Deleting or renaming a G-code file over the drive
 removes its `.viz`. You will see the `.viz` files next to your G-code in
 Explorer; leave them there. Progress shows in the web UI (and any console) as
 `[MSG:VizAutoBusy/VizAutoReady/VizAutoErr:...]`; these are not sent to the
 pendant, so they never replace what the pendant is showing.
-`$Viz/Refresh=/sd/file.nc` queues a rebuild by hand.
+`$Viz/Refresh=/sd/file.nc` queues a rebuild by hand (WebUI: select the file →
+**Pendant .viz**, with a confirmation). Large files are thinned so the preview
+always covers the whole file (max 8000 points).
 
 Tips:
 - Clicking the board under Explorer's **Network** folder, or typing

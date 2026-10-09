@@ -23,6 +23,19 @@ PENDANT = ["connected"]   # TabUI pendant link state (GET /mock/pendant?state=..
 GCODE_RE = re.compile(r"\.(nc|gcode|gc|ngc|tap|cnc|g)$", re.I)
 
 
+def make_viz(gcode: bytes) -> bytes:
+    """Rough .viz like the firmware's: header, then "x,y" per XY move."""
+    x = y = 0.0
+    pts = []
+    for ln in gcode.decode(errors="replace").upper().splitlines():
+        mx, my = re.search(r"X([-\d.]+)", ln), re.search(r"Y([-\d.]+)", ln)
+        if mx or my:
+            x = float(mx.group(1)) if mx else x
+            y = float(my.group(1)) if my else y
+            pts.append(f"{x:.3f},{y:.3f}")
+    return (f"VIZ {len(pts)} 0 10 0 10\n" + "\n".join(pts) + "\n").encode()
+
+
 async def broadcast(texts):
     for out in list(SESSIONS):
         try:
@@ -37,10 +50,11 @@ async def auto_viz(rel):
     if rel not in FILES["sd"]:
         return
     src = "/sd" + rel
+    await broadcast([f"[MSG:VizAutoQueued:{src}]"])
     n = FILES["sd"][rel].count(b"\n")
     await broadcast([f"[MSG:VizAutoBusy:{src}:0]"])
     await asyncio.sleep(0.2)
-    FILES["sd"][rel + ".viz"] = f"VIZ {n} 0 10 0 10\n".encode()
+    FILES["sd"][rel + ".viz"] = make_viz(FILES["sd"][rel])
     await broadcast([f"[MSG:VizAutoReady:{src}.viz:{n}:0.000:10.000:0.000:10.000]"])
 
 
@@ -127,9 +141,12 @@ class Machine:
                     tgt[i] += max(-300, min(300, words[a]))
             self.target, self.speed, self.state, self.feed = tgt, f / 60, "Jog", f
             return ["ok"]
-        if u in ("$RI=200", "$REPORT/INTERVAL=200"):
-            self.report_ms = 200
+        mri = re.fullmatch(r"\$(?:RI|REPORT/INTERVAL)=(\d+)", u)
+        if mri:
+            self.report_ms = int(mri.group(1))
             return ["ok"]
+        if u == "[ESP111]":
+            return ["127.0.0.1", "ok"]
         if u == "$G":
             return [f"[GC:G0 {self.wcs} G17 G21 G90 G94 M5 M9 T0 F0 S0]", "ok"]
         if u == "$H":
@@ -171,7 +188,7 @@ class Machine:
             if rel not in FILES["sd"]:
                 return [f"[MSG:VizErr:cannot open:{src}]", "ok"]
             n = FILES["sd"][rel].count(b"\n")
-            FILES["sd"][rel + ".viz"] = f"VIZ {n} 0 10 0 10\n".encode()
+            FILES["sd"][rel + ".viz"] = make_viz(FILES["sd"][rel])
             return [f"[MSG:VizBusy:{src}:50]", f"[MSG:VizReady:{src}.viz:{n}:0.000:10.000:0.000:10.000]", "ok"]
         if u == "BAD":
             return ["error:20"]

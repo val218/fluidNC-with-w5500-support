@@ -35,6 +35,10 @@
 #define VIZ_ARC_SEGMENTS  16
 
 static bool  _viz_busy   = false;
+// Thinning, scaled per file so large files are covered end to end instead of
+// stopping at VIZ_MAX_POINTS part-way through.
+static int   _sample_every = VIZ_SAMPLE_EVERY;
+static int   _arc_segments = VIZ_ARC_SEGMENTS;
 static float _modal_x = 0, _modal_y = 0, _modal_z = 0;
 static bool  _modal_abs  = true;
 static bool  _modal_inch = false;
@@ -84,8 +88,8 @@ static int write_arc(FILE* f, float x0, float y0, float x1, float y1,
     if (cw) { if (a1 >= a0) a1 -= 2.0f * M_PI; }
     else    { if (a1 <= a0) a1 += 2.0f * M_PI; }
     int written = 0;
-    for (int s = 1; s <= VIZ_ARC_SEGMENTS && *count < VIZ_MAX_POINTS; s++) {
-        float t = (float)s / VIZ_ARC_SEGMENTS;
+    for (int s = 1; s <= _arc_segments && *count < VIZ_MAX_POINTS; s++) {
+        float t = (float)s / _arc_segments;
         float ang = a0 + t * (a1 - a0);
         float px = cx + r * cosf(ang);
         float py = cy + r * sinf(ang);
@@ -117,6 +121,24 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         return false;
     }
 
+    // File size -> thinning. ~22 bytes per G-code line is typical CAM output;
+    // aim to use ~85% of the point budget over the whole file.
+    long file_size = 0;
+    if (fseek(nc, 0, SEEK_END) == 0) {
+        file_size = ftell(nc);
+    }
+    fseek(nc, 0, SEEK_SET);
+    {
+        const long est_lines = file_size / 22;
+        const long budget    = (VIZ_MAX_POINTS * 85L) / 100;
+        _sample_every        = VIZ_SAMPLE_EVERY;
+        _arc_segments        = VIZ_ARC_SEGMENTS;
+        if (est_lines > budget * VIZ_SAMPLE_EVERY) {
+            _sample_every = (int)((est_lines + budget - 1) / budget);
+            _arc_segments = std::max(3, VIZ_ARC_SEGMENTS * VIZ_SAMPLE_EVERY / _sample_every);
+        }
+    }
+
     std::string tmp = viz_out + ".tmp";
     remove(tmp.c_str());
     FILE* vf = fopen(tmp.c_str(), "w");
@@ -143,9 +165,10 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
             feed_watchdog();  // 4.1.x: protocol/poller tasks are TWDT-monitored
         }
         if (line_num % 1000 == 0) {
-            char msg[64];
+            char msg[160];
+            long pos = ftell(nc);  // progress through the file, not the point budget
             snprintf(msg, sizeof(msg), "VizBusy:%s:%d",
-                     nc_path.c_str(), n_points * 100 / VIZ_MAX_POINTS);
+                     nc_path.c_str(), file_size > 0 ? (int)(pos * 100 / file_size) : 0);
             viz_msg(msg);
         }
 
@@ -192,7 +215,7 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         } else {
             float dx = new_x - last_px, dy = new_y - last_py;
             if (sqrtf(dx*dx + dy*dy) >= VIZ_MIN_DIST_MM || last_px > 1e8f) {
-                if (++sample_ct >= VIZ_SAMPLE_EVERY || last_px > 1e8f) {
+                if (++sample_ct >= _sample_every || last_px > 1e8f) {
                     sample_ct = 0;
                     fprintf(vf, "%.3f,%.3f\n", new_x, new_y);
                     if (new_x < xmin) xmin = new_x; if (new_x > xmax) xmax = new_x;
@@ -283,13 +306,20 @@ static bool is_gcode(const std::string& p) {
 static bool on_sd(const std::string& p) { return p.compare(0, 4, "/sd/") == 0; }
 
 static void enqueue(const std::string& path, uint32_t delay) {
-    std::lock_guard<std::mutex> lock(_q_mutex);
-    uint32_t due = millis() + delay;
-    for (auto& r : _queue) {
-        if (r.path == path) { r.due = due; return; }
+    {
+        std::lock_guard<std::mutex> lock(_q_mutex);
+        uint32_t due = millis() + delay;
+        bool     found = false;
+        for (auto& r : _queue) {
+            if (r.path == path) { r.due = due; found = true; break; }
+        }
+        if (!found) _queue.push_back({ path, due });
+        _q_len = _queue.size();
     }
-    _queue.push_back({ path, due });
-    _q_len = _queue.size();
+    // Tell the web UI it is waiting (it only runs while nothing moves).
+    char buf[200];
+    snprintf(buf, sizeof(buf), "[MSG:VizAutoQueued:%s]\r\n", path.c_str());
+    allChannels.print_except(buf, static_cast<Channel*>(pendant_channel()));
 }
 
 void viz_file_written(const std::string& path) {
@@ -312,7 +342,8 @@ void viz_file_removed(const std::string& path) {
 
 void viz_poll() {
     if (_q_len == 0 || _viz_busy) return;
-    if (!state_is(State::Idle) || Job::active()) return;
+    // Any state without motion: Alarm is normal after power-up until homing.
+    if (Job::active() || !(state_is(State::Idle) || state_is(State::Alarm) || state_is(State::Sleep))) return;
     std::string path;
     {
         std::lock_guard<std::mutex> lock(_q_mutex);

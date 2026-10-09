@@ -9,6 +9,7 @@ All sources are inlined into one index.html, which is gzipped for FluidNC.
 """
 import argparse
 import base64
+import json
 import gzip
 import pathlib
 import shutil
@@ -18,9 +19,10 @@ ROOT = pathlib.Path(__file__).resolve().parent
 SRC = ROOT / "src"
 DIST = ROOT / "dist"
 DATA = ROOT.parent / "FluidNC" / "data"
+SD_DRIVE_CMD = ROOT.parent / "tools" / "windows" / "dpcreator-sd-drive.cmd"
 
 # Order matters: later files use globals defined by earlier ones.
-JS_FILES = ["util.js", "codes.js", "conn.js", "gcode.js", "viewer.js", "files.js", "app.js"]
+JS_FILES = ["util.js", "codes.js", "conn.js", "gcode.js", "viewer.js", "files.js", "monitor.js", "app.js"]
 
 
 def version() -> str:
@@ -52,6 +54,7 @@ def build() -> pathlib.Path:
         .replace("/*__APP__*/", app)
         .replace("__VERSION__", version())
         .replace("__LOGO__", data_uri(ROOT / "assets" / "logo.png"))
+        .replace("__SD_DRIVE_CMD__", json.dumps(SD_DRIVE_CMD.read_bytes().decode("ascii")))
         .replace("__FAVICON__", data_uri(ROOT / "assets" / "favicon.png"))
     )
     DIST.mkdir(exist_ok=True)
