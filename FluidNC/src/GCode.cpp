@@ -15,7 +15,6 @@
 #include "Machine/UserOutputs.h"  // setAnalogPercent
 #include "Machine/UserInputs.h"   // read digital/analog inputs
 #include "Platform.h"             // WEAK_LINK
-#include "Job.h"                  // Job::channel (file line numbers)
 #include "Job.h"                  // Job::active() and Job::channel()
 
 #include "Machine/MachineConfig.h"
