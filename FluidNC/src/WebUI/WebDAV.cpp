@@ -193,6 +193,24 @@ no C++17 file-time -> time_t conversion is implemented here."
         state.pending += "<d:prop>";
         if (frame.is_dir) {
             state.pending += "<d:resourcetype><d:collection/></d:resourcetype>";
+            // RFC 4331 quota: Windows' WebDAV drive takes its size/free space
+            // from these, and shows the PC's own system drive without them.
+            // Only on the requested folder, so a listing costs one statfs.
+            if (frame.path == state.root_path) {
+                std::error_code ec;
+                stdfs::space_info space;
+                {
+                    WatchdogSuspend wdt_off;  // first FAT free-cluster count can be slow
+                    space = stdfs::space(frame.path, ec);
+                }
+                if (!ec && space.capacity && space.capacity != static_cast<uintmax_t>(-1)) {
+                    state.pending += "<d:quota-available-bytes>";
+                    state.pending += std::to_string(space.available);
+                    state.pending += "</d:quota-available-bytes><d:quota-used-bytes>";
+                    state.pending += std::to_string(space.capacity - space.available);
+                    state.pending += "</d:quota-used-bytes>";
+                }
+            }
         } else {
             state.pending += "<d:getlastmodified>";
             state.pending += xml_escape(frame.timestr);
