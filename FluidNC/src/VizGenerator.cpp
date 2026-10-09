@@ -41,6 +41,7 @@ static int   _sample_every = VIZ_SAMPLE_EVERY;
 static int   _arc_segments = VIZ_ARC_SEGMENTS;
 static float _modal_x = 0, _modal_y = 0, _modal_z = 0;
 static bool  _modal_abs  = true;
+static int   _modal_motion = -1;  // G0/G1/G2/G3 stays active on following lines
 static bool  _modal_inch = false;
 
 static float to_mm(float v) { return _modal_inch ? v * 25.4f : v; }
@@ -146,6 +147,7 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
 
     _modal_x = 0; _modal_y = 0; _modal_z = 0;
     _modal_abs = true; _modal_inch = false;
+    _modal_motion = -1;
 
     float xmin = 1e9f, xmax = -1e9f, ymin = 1e9f, ymax = -1e9f;
     int n_points = 0, line_num = 0, sample_ct = 0;
@@ -159,6 +161,21 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         int len = strlen(linebuf);
         while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r')) linebuf[--len] = '\0';
         for (int i = 0; i < len; i++) linebuf[i] = toupper(linebuf[i]);
+        // Drop comments: "(...)" anywhere and ";" to end of line - their
+        // letters (T1 D=6, X-axis notes...) must not be read as words.
+        {
+            int  w = 0;
+            bool inParen = false;
+            for (int r = 0; r < len; r++) {
+                char c = linebuf[r];
+                if (inParen) { if (c == ')') inParen = false; continue; }
+                if (c == '(') { inParen = true; continue; }
+                if (c == ';') break;
+                linebuf[w++] = c;
+            }
+            linebuf[w] = '\0';
+            len = w;
+        }
         line_num++;
 
         if (line_num % 100 == 0) {
@@ -203,6 +220,11 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
             }
         }
 
+        // Motion is modal: "X10 Y20" after a G1 is still a G1 (CAM output
+        // usually omits the repeated G word - those moves were all lost).
+        if (motion >= 0) _modal_motion = motion;
+        else motion = _modal_motion;
+
         if (motion < 0 || (!has_x && !has_y)) {
             _modal_x = new_x; _modal_y = new_y; _modal_z = new_z;
             continue;
@@ -237,7 +259,8 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         if (vf_r) fclose(vf_r); if (vf_w) fclose(vf_w);
         remove(tmp.c_str()); return false;
     }
-    fprintf(vf_w, "VIZ %d %.3f %.3f %.3f %.3f\n", n_points, xmin, xmax, ymin, ymax);
+    // " v2": generator version; older files (modal-motion bug) are rebuilt.
+    fprintf(vf_w, "VIZ %d %.3f %.3f %.3f %.3f v2\n", n_points, xmin, xmax, ymin, ymax);
     // Skip placeholder header
     char skip[128]; fgets(skip, sizeof(skip), vf_r);
     // Copy rest
@@ -255,10 +278,15 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
 
 std::string viz_path(const std::string& nc_path) { return nc_path + ".viz"; }
 
+// A usable .viz exists: present and written by this generator version
+// (files from the old generator missed modal moves - treat them as missing).
 bool viz_exists(const std::string& nc_path) {
     FILE* f = fopen(viz_path(nc_path).c_str(), "r");
-    if (f) { fclose(f); return true; }
-    return false;
+    if (!f) return false;
+    char head[96] = {};
+    bool ok = fgets(head, sizeof(head), f) && strstr(head, " v2");
+    fclose(f);
+    return ok;
 }
 
 bool viz_generate(const std::string& nc_path) {
