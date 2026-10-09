@@ -30,7 +30,7 @@
 #include <cerrno>
 
 #define VIZ_MAX_POINTS    8000
-#define VIZ_SAMPLE_EVERY  3
+#define VIZ_SAMPLE_EVERY  1   // keep every cut unless the file is large (see thinning)
 #define VIZ_MIN_DIST_MM   0.5f
 #define VIZ_ARC_SEGMENTS  16
 
@@ -80,7 +80,7 @@ static void viz_msg(const char* msg) {
 static int write_arc(FILE* f, float x0, float y0, float x1, float y1,
                      float i, float j, bool cw,
                      float* xmin, float* xmax, float* ymin, float* ymax,
-                     int* count) {
+                     int* count, float z0, float z1, int line) {
     float cx = x0 + i, cy = y0 + j;
     float r = sqrtf(i*i + j*j);
     if (r < 0.001f) return 0;
@@ -94,7 +94,7 @@ static int write_arc(FILE* f, float x0, float y0, float x1, float y1,
         float ang = a0 + t * (a1 - a0);
         float px = cx + r * cosf(ang);
         float py = cy + r * sinf(ang);
-        fprintf(f, "%.3f,%.3f\n", px, py);
+        fprintf(f, "%.3f,%.3f,%.3f,1,%d\n", px, py, z0 + t * (z1 - z0), line);  // helical Z
         if (px < *xmin) *xmin = px; if (px > *xmax) *xmax = px;
         if (py < *ymin) *ymin = py; if (py > *ymax) *ymax = py;
         (*count)++; written++;
@@ -151,7 +151,24 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
 
     float xmin = 1e9f, xmax = -1e9f, ymin = 1e9f, ymax = -1e9f;
     int n_points = 0, line_num = 0, sample_ct = 0;
-    float last_px = 1e9f, last_py = 1e9f;
+    float last_px = 1e9f, last_py = 1e9f, last_pz = 0;
+    int   last_t  = -1;
+    // Point format: "x,y,z,type,line" - type 0 = rapid, 1 = cut; line = 1-based
+    // G-code line (matches FluidNC's Ln: status field, for live progress).
+    auto emit = [&](float x, float y, float z, int t, int line) {
+        if (n_points >= VIZ_MAX_POINTS) return;
+        fprintf(vf, "%.3f,%.3f,%.3f,%d,%d\n", x, y, z, t, line);
+        if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+        if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+        last_px = x; last_py = y; last_pz = z; last_t = t;
+        n_points++;
+    };
+    float pend_x = 0, pend_y = 0, pend_z = 0;
+    int   pend_line = 0;
+    bool  pend_ok   = false;
+    auto flush_pending = [&]() {
+        if (pend_ok) { emit(pend_x, pend_y, pend_z, 1, pend_line); pend_ok = false; }
+    };
 
     fprintf(vf, "VIZ 00000 +00000.000 +00000.000 +00000.000 +00000.000\n");
 
@@ -195,7 +212,7 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         float new_x = _modal_x, new_y = _modal_y, new_z = _modal_z;
         float arc_i = 0, arc_j = 0;
         int motion = -1;
-        bool has_x = false, has_y = false;
+        bool has_x = false, has_y = false, has_z = false;
 
         const char* scan = p;
         while (*scan) {
@@ -214,7 +231,7 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
                     } break;
                 case 'X': new_x = _modal_abs ? to_mm(val) : _modal_x + to_mm(val); has_x=true; break;
                 case 'Y': new_y = _modal_abs ? to_mm(val) : _modal_y + to_mm(val); has_y=true; break;
-                case 'Z': new_z = _modal_abs ? to_mm(val) : _modal_z + to_mm(val); break;
+                case 'Z': new_z = _modal_abs ? to_mm(val) : _modal_z + to_mm(val); has_z=true; break;
                 case 'I': arc_i = to_mm(val); break;
                 case 'J': arc_j = to_mm(val); break;
             }
@@ -225,30 +242,41 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         if (motion >= 0) _modal_motion = motion;
         else motion = _modal_motion;
 
-        if (motion < 0 || (!has_x && !has_y)) {
+        if (motion < 0 || (!has_x && !has_y && !has_z)) {
             _modal_x = new_x; _modal_y = new_y; _modal_z = new_z;
             continue;
         }
 
         if (motion == 2 || motion == 3) {
+            flush_pending();  // the arc starts at the current position
             write_arc(vf, _modal_x, _modal_y, new_x, new_y,
                       arc_i, arc_j, motion == 2,
-                      &xmin, &xmax, &ymin, &ymax, &n_points);
+                      &xmin, &xmax, &ymin, &ymax, &n_points, _modal_z, new_z, line_num);
+            last_px = new_x; last_py = new_y; last_pz = new_z; last_t = 1;
         } else {
-            float dx = new_x - last_px, dy = new_y - last_py;
-            if (sqrtf(dx*dx + dy*dy) >= VIZ_MIN_DIST_MM || last_px > 1e8f) {
-                if (++sample_ct >= _sample_every || last_px > 1e8f) {
-                    sample_ct = 0;
-                    fprintf(vf, "%.3f,%.3f\n", new_x, new_y);
-                    if (new_x < xmin) xmin = new_x; if (new_x > xmax) xmax = new_x;
-                    if (new_y < ymin) ymin = new_y; if (new_y > ymax) ymax = new_y;
-                    last_px = new_x; last_py = new_y;
-                    n_points++;
-                }
+            // Keep every rapid, every Z change and every switch between rapid
+            // and cut (so plunges/retracts and the 3D shape survive); thin only
+            // runs of cuts at one depth, and then keep the last skipped point
+            // before the next kept one so corners stay put.
+            int   t      = (motion == 0) ? 0 : 1;
+            float dx     = new_x - last_px, dy = new_y - last_py;
+            bool  first  = last_px > 1e8f;
+            bool  zchg   = fabsf(new_z - last_pz) > 0.001f;
+            bool  tchg   = t != last_t;
+            bool  far    = sqrtf(dx*dx + dy*dy) >= VIZ_MIN_DIST_MM;
+            bool  keep   = first || zchg || tchg || t == 0 || (far && ++sample_ct >= _sample_every);
+            if (keep) {
+                if (zchg || tchg || t == 0) flush_pending();
+                emit(new_x, new_y, new_z, t, line_num);
+                sample_ct = 0;
+                pend_ok   = false;
+            } else {
+                pend_x = new_x; pend_y = new_y; pend_z = new_z; pend_line = line_num; pend_ok = true;
             }
         }
         _modal_x = new_x; _modal_y = new_y; _modal_z = new_z;
     }
+    flush_pending();
     fclose(nc); fclose(vf);
 
     // Rewrite with real header
@@ -259,8 +287,8 @@ static bool do_generate(const std::string& nc_path, const std::string& viz_out) 
         if (vf_r) fclose(vf_r); if (vf_w) fclose(vf_w);
         remove(tmp.c_str()); return false;
     }
-    // " v2": generator version; older files (modal-motion bug) are rebuilt.
-    fprintf(vf_w, "VIZ %d %.3f %.3f %.3f %.3f v2\n", n_points, xmin, xmax, ymin, ymax);
+    // " v3": generator version (x,y,z,type,line points); older files are rebuilt.
+    fprintf(vf_w, "VIZ %d %.3f %.3f %.3f %.3f v3\n", n_points, xmin, xmax, ymin, ymax);
     // Skip placeholder header
     char skip[128]; fgets(skip, sizeof(skip), vf_r);
     // Copy rest
@@ -284,7 +312,7 @@ bool viz_exists(const std::string& nc_path) {
     FILE* f = fopen(viz_path(nc_path).c_str(), "r");
     if (!f) return false;
     char head[96] = {};
-    bool ok = fgets(head, sizeof(head), f) && strstr(head, " v2");
+    bool ok = fgets(head, sizeof(head), f) && strstr(head, " v3");
     fclose(f);
     return ok;
 }

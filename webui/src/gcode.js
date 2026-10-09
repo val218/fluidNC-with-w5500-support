@@ -167,29 +167,41 @@ const Gcode = (() => {
     }
   }
 
-  // A pendant ".viz" file (header line, then "x,y" per line, work coords) as a
-  // flat 2D job: small enough to fetch while a job is running from the card.
+  // A FluidNC ".viz" file: header "VIZ n xmin xmax ymin ymax v3", then
+  // "x,y,z,type,line" per point (type 0 = rapid, 1 = cut; work coords).
+  // Older files have only "x,y": drawn as a flat 2D outline.
+  // Small enough to fetch while a job is running from the card.
   function fromViz(text) {
-    const Z = 0.2; // just above the grid so the outline does not vanish into it
     const feed = new Grow(Float32Array), feedOff = new Grow(Uint32Array, 4096), feedCum = new Grow(Float32Array, 4096);
-    const min = [Infinity, Infinity, Z], max = [-Infinity, -Infinity, Z];
-    let px = null, py = null, n = 0, feedLen = 0;
+    const feedLn = new Grow(Uint32Array, 4096);
+    const rapid = new Grow(Float32Array), rapidOff = new Grow(Uint32Array, 4096);
+    const FLAT_Z = 0.2; // old 2D files: just above the grid
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    let px = null, py = null, pz = null, n = 0, feedLen = 0, rapidLen = 0, has3d = false;
     for (const line of text.split(/\r?\n/)) {
-      const c = line.indexOf(",");
-      if (c < 0) continue;
-      const x = parseFloat(line), y = parseFloat(line.slice(c + 1));
+      if (line.indexOf(",") < 0) continue;
+      const f = line.split(",");
+      const x = parseFloat(f[0]), y = parseFloat(f[1]);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      if (px !== null && (x !== px || y !== py)) {
-        feed.push(px, py, Z, x, y, Z); feedOff.push(n); feedLen += Math.hypot(x - px, y - py); feedCum.push(feedLen);
+      let z = parseFloat(f[2]);
+      if (Number.isFinite(z)) has3d = true; else z = FLAT_Z;
+      const t = f.length > 3 ? parseInt(f[3], 10) : 1;
+      const ln = f.length > 4 ? parseInt(f[4], 10) : n + 1;
+      if (px !== null && (x !== px || y !== py || z !== pz)) {
+        const d = Math.hypot(x - px, y - py, z - pz);
+        if (t === 0) { rapid.push(px, py, pz, x, y, z); rapidOff.push(n); rapidLen += d; }
+        else { feed.push(px, py, pz, x, y, z); feedOff.push(n); feedLen += d; feedCum.push(feedLen); feedLn.push(ln); }
       }
       if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
       if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
-      px = x; py = y; n++;
+      if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+      px = x; py = y; pz = z; n++;
     }
     if (!Number.isFinite(min[0])) { min.fill(0); max.fill(0); }
     return {
-      feed: feed.done(), feedOff: feedOff.done(), feedCum: feedCum.done(), rapid: new Float32Array(0), rapidOff: new Uint32Array(0),
-      min, max, bytes: n, lines: n, tools: 0, feedLen, rapidLen: 0, estMinutes: NaN, flat: true,
+      feed: feed.done(), feedOff: feedOff.done(), feedCum: feedCum.done(), feedLn: feedLn.done(),
+      rapid: rapid.done(), rapidOff: rapidOff.done(),
+      min, max, bytes: n, lines: n, tools: 0, feedLen, rapidLen, estMinutes: NaN, flat: !has3d,
     };
   }
 

@@ -316,13 +316,13 @@
     const label = $("#viewer-file");
     Viewer.load(job);
     const name = key.slice(key.indexOf(":") + 1).split("/").pop();
-    label.textContent = name + (partial ? " · 2D preview" : "");
+    label.textContent = name + (partial ? " · preview" : "");
     label.dataset.path = key;
     label.dataset.partial = partial ? "1" : "";
     $("#load-full").hidden = !partial;
     const size = job.max.map((v, i) => v - job.min[i]);
     $("#viewer-info").textContent = partial
-      ? `${size[0].toFixed(1)} × ${size[1].toFixed(1)} mm · 2D outline from the pendant .viz · ` +
+      ? `${size.map((v) => v.toFixed(1)).join(" × ")} mm · simplified path from the .viz · ` +
         "the full 3D path loads when the machine stops"
       : `${size.map((v) => v.toFixed(1)).join(" × ")} mm · Z ${job.min[2].toFixed(2)}…${job.max[2].toFixed(2)}` +
         ` · cut ${(job.feedLen / 1000).toFixed(2)} m · est. ${fmtTime(job.estMinutes * 60)}` +
