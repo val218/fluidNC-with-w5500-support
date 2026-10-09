@@ -42,7 +42,7 @@ uart1:
   rxd_pin: gpio.2
   rts_pin: NO_PIN
   cts_pin: NO_PIN
-  baud: 115200
+  baud: 1000000        # TabUI / Fluid Dial pendant firmware is built with FNC_BAUD=1000000
   mode: 8N1
 
 uart_channel1:
