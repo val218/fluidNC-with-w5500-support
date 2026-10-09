@@ -23,6 +23,7 @@ const Gcode = (() => {
   // onProgress(fraction) is called between chunks.
   async function parse(text, { rapidRate = 3000, onProgress } = {}) {
     const feed = new Grow(Float32Array), feedOff = new Grow(Uint32Array, 4096), feedCum = new Grow(Float32Array, 4096);
+    const feedLn = new Grow(Uint32Array, 4096); // 1-based file line of each cut (matches FluidNC's Ln:)
     let est = 0;
     const rapid = new Grow(Float32Array), rapidOff = new Grow(Uint32Array, 4096);
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
@@ -43,6 +44,7 @@ const Gcode = (() => {
         feed.push(x1, y1, z1, x2, y2, z2); feedOff.push(off); feedLen += d;
         if (s.f > 0) { feedTime += d / s.f; est += d / s.f; }
         feedCum.push(est); // estimated minutes from job start to the end of this cut
+        feedLn.push(lines);
       }
       extend(x1, y1, z1); extend(x2, y2, z2);
     };
@@ -116,7 +118,7 @@ const Gcode = (() => {
     }
     if (!Number.isFinite(min[0])) { min.fill(0); max.fill(0); }
     return {
-      feed: feed.done(), feedOff: feedOff.done(), feedCum: feedCum.done(),
+      feed: feed.done(), feedOff: feedOff.done(), feedCum: feedCum.done(), feedLn: feedLn.done(),
       rapid: rapid.done(), rapidOff: rapidOff.done(),
       min, max, bytes: total, lines, tools,
       feedLen, rapidLen,

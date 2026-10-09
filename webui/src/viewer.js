@@ -157,7 +157,26 @@ const Viewer = (() => {
   // on the segment / total estimated time. Returns 0..1, or null if unknown.
   let trackIdx = -1;
   const LINES_BACK = 40; // FluidNC's planner holds far fewer G-code lines than this
-  function setProgress(fraction, wpos) {
+  // Point-to-segment search over feed segments [from, to]; returns [i, u, d2].
+  function nearest(from, to, wpos) {
+    const f = job.feed, flat = !!job.flat;
+    const [px, py, pz] = wpos;
+    let best = Infinity, bestI = -1, bestT = 0;
+    for (let i = from; i <= to; i++) {
+      const k = i * 6;
+      const ax = f[k], ay = f[k + 1], az = flat ? pz : f[k + 2];
+      const dx = f[k + 3] - ax, dy = f[k + 4] - ay, dz = flat ? 0 : f[k + 5] - az;
+      const len2 = dx * dx + dy * dy + dz * dz;
+      let u = len2 ? ((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / len2 : 0;
+      u = u < 0 ? 0 : u > 1 ? 1 : u;
+      const ex = ax + u * dx - px, ey = ay + u * dy - py, ez = az + u * dz - pz;
+      const d2 = ex * ex + ey * ey + ez * ez;
+      if (d2 < best - 1e-6) { best = d2; bestI = i; bestT = u; }
+    }
+    return [bestI, bestT, best];
+  }
+
+  function setProgress(fraction, wpos, line) {
     if (!job || !feedLines || !job.feed.length) return null;
     const offs = job.feedOff, f = job.feed, nSeg = offs.length;
     const byte = fraction * job.bytes;
@@ -165,30 +184,28 @@ const Viewer = (() => {
     while (lo < hi) { const mid = (lo + hi) >> 1; if (offs[mid] < byte) lo = mid + 1; else hi = mid; }
     const ahead = Math.min(lo, nSeg - 1);
     let idx = ahead, t = 1;
-    if (wpos && wpos.every(Number.isFinite)) {
-      const [px, py, pz] = wpos;
-      const flat = !!job.flat;
-      // window: segments of the last LINES_BACK lines before the read pointer,
-      // never before the segment we last matched (the tool only moves forward)
-      let lo2 = ahead, lines = 0, lastOff = -1;
-      while (lo2 > 0 && lines < LINES_BACK) {
+    const lns = job.feedLn;
+    const haveTool = wpos && wpos.every(Number.isFinite);
+    if (line > 0 && lns && lns.length === nSeg) {
+      // FluidNC told us the exact line being cut (Ln:): its segments, or
+      // the next cut after it if that line is not a cut (rapid, M-code).
+      let a = 0, b = nSeg;
+      while (a < b) { const mid = (a + b) >> 1; if (lns[mid] < line) a = mid + 1; else b = mid; }
+      let e = a;
+      while (e < nSeg && lns[e] === line) e++;
+      if (e > a && haveTool) { [idx, t] = nearest(a, e - 1, wpos); if (idx < 0) { idx = a; t = 0; } }
+      else { idx = Math.min(a, nSeg - 1); t = 0; }
+      trackIdx = idx;
+    } else if (haveTool) {
+      // No Ln: (older firmware): window = segments of the last LINES_BACK
+      // lines before the read pointer, never before the last match.
+      let lo2 = ahead, nl = 0, lastOff = -1;
+      while (lo2 > 0 && nl < LINES_BACK) {
         lo2--;
-        if (offs[lo2] !== lastOff) { lines++; lastOff = offs[lo2]; }
+        if (offs[lo2] !== lastOff) { nl++; lastOff = offs[lo2]; }
       }
       if (trackIdx > lo2 && trackIdx <= ahead) lo2 = trackIdx;
-      const hi2 = Math.min(nSeg - 1, ahead + 5);
-      let best = Infinity, bestI = -1, bestT = 0;
-      for (let i = lo2; i <= hi2; i++) {
-        const k = i * 6;
-        const ax = f[k], ay = f[k + 1], az = flat ? pz : f[k + 2];
-        const dx = f[k + 3] - ax, dy = f[k + 4] - ay, dz = flat ? 0 : f[k + 5] - az;
-        const len2 = dx * dx + dy * dy + dz * dz;
-        let u = len2 ? ((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / len2 : 0;
-        u = u < 0 ? 0 : u > 1 ? 1 : u;
-        const ex = ax + u * dx - px, ey = ay + u * dy - py, ez = az + u * dz - pz;
-        const d2 = ex * ex + ey * ey + ez * ez;
-        if (d2 < best - 1e-6) { best = d2; bestI = i; bestT = u; } // ties: earliest after the last match
-      }
+      const [bestI, bestT, best] = nearest(lo2, Math.min(nSeg - 1, ahead + 5), wpos);
       if (bestI >= 0 && best < 4) { idx = bestI; t = bestT; trackIdx = idx; }      // within 2 mm: on the path
       else if (trackIdx >= 0 && trackIdx <= ahead) { idx = trackIdx; t = 1; }      // rapid / off path: hold
     }

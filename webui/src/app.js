@@ -196,7 +196,7 @@
       // the planner buffer, and counts bytes, not machining time).
       const [jfs, jpath] = jobFsPath(st.sdFile);
       const onScreen = Viewer.job && $("#viewer-file").dataset.path === cacheKey(jfs, jpath);
-      const p = onScreen ? Viewer.setProgress(filePct / 100, wpos) : null;
+      const p = onScreen ? Viewer.setProgress(filePct / 100, wpos, st.line) : null;
       const pct = p === null ? filePct : p * 100;
       const elapsed = (Date.now() - S.job.start) / 1000;
       // Page opened mid-job: measure the rate from the first % we saw.

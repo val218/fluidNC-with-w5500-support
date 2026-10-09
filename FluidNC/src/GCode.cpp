@@ -15,6 +15,7 @@
 #include "Machine/UserOutputs.h"  // setAnalogPercent
 #include "Machine/UserInputs.h"   // read digital/analog inputs
 #include "Platform.h"             // WEAK_LINK
+#include "Job.h"                  // Job::channel (file line numbers)
 #include "Job.h"                  // Job::active() and Job::channel()
 
 #include "Machine/MachineConfig.h"
@@ -1696,6 +1697,14 @@ Error gc_execute_line(const char* input_line, Channel& channel) {
     gc_state.line_number     = gc_block.values.n;
     pl_data->line_number     = gc_state.line_number;  // Record data for planner use.
     pl_data->has_line_number = bitnum_is_true(value_words, GCodeWord::N);
+    // File jobs without N words: carry the file's own line number, so the
+    // status report can say exactly which line is being cut (Ln:) - used by
+    // the WebUI and the TabUI pendant for progress and job return.
+    if (!pl_data->has_line_number) {
+        if (Channel* jc = Job::channel()) {
+            pl_data->line_number = jc->lineNumber();
+        }
+    }
 
     // [1. Comments feedback ]:  NOT SUPPORTED
     // [2. Set feed rate mode ]:

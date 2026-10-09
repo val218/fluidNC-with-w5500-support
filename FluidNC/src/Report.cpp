@@ -517,8 +517,9 @@ void report_realtime_status(Channel& channel) {
         msg << "|Bf:" << plan_get_block_buffer_available() << "," << channel.rx_buffer_available();
     }
 
-    if (config->_useLineNumbers) {
-        // Report current line number
+    if (config->_useLineNumbers || Job::active()) {
+        // Report current line number (during a file job: the file line of the
+        // block being executed, not the read-ahead position)
         plan_block_t* cur_block = plan_get_current_block();
         if (cur_block != NULL) {
             uint32_t ln = cur_block->line_number;

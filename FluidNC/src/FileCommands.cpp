@@ -151,14 +151,29 @@ static Error fileShowSome(const char* parameter, AuthenticationLevel auth_level,
     if ((err = openFile(SD, fn.c_str(), out, theFile)) != Error::Ok) {
         error = "Cannot open file";
     } else {
-        char  fileLine[255];
-        Error res = Error::Ok;
-        for (uint32_t linenum = 0; linenum < lastline && (res = theFile->readLine(fileLine, 255)) == Error::Ok; ++linenum) {
+        char     fileLine[255];
+        Error    res     = Error::Ok;
+        uint32_t linenum = 0;
+        // Sequential batches (a pendant loading a .viz 500 lines at a time)
+        // continue where the previous request stopped instead of re-reading
+        // the file from the start every time.
+        static std::string ss_path;
+        static uint32_t    ss_line = 0;
+        static size_t      ss_pos = 0, ss_size = 0;
+        if (ss_line > 0 && ss_path == fn && ss_size == theFile->size() && firstline >= ss_line) {
+            theFile->set_position(ss_pos);
+            linenum = ss_line;
+        }
+        for (; linenum < lastline && (res = theFile->readLine(fileLine, 255)) == Error::Ok; ++linenum) {
             feed_watchdog();  // Skipping to a late firstline reads the file from the start
             if (linenum >= firstline) {
                 j.string(fileLine);
             }
         }
+        ss_path = fn;
+        ss_line = linenum;
+        ss_pos  = theFile->position();
+        ss_size = theFile->size();
         delete theFile;
         if (res != Error::Eof && res != Error::Ok) {
             error = errorString(res);
