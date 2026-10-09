@@ -25,7 +25,25 @@ namespace WebUI {
         { "Ethernet", NetworkTypeEthernet },
     };
 
-    NetworkType networkType() { return _network_type ? NetworkType(_network_type->get()) : NetworkTypeWiFi; }
+    // $network/type=Ethernet with no ethernet: section in config.yaml (e.g. a
+    // fresh flash with the default config) would leave the board with no
+    // network at all - only USB. Use WiFi instead (saved network, else the
+    // FluidNC access point) until the config has an ethernet: section again;
+    // the stored setting is untouched.
+    bool ethernetFallbackToWiFi() {
+#if MAX_N_ETH
+        return _network_type && NetworkType(_network_type->get()) == NetworkTypeEthernet && config && !config->_ethernet;
+#else
+        return false;
+#endif
+    }
+
+    NetworkType networkType() {
+        if (ethernetFallbackToWiFi()) {
+            return NetworkTypeWiFi;
+        }
+        return _network_type ? NetworkType(_network_type->get()) : NetworkTypeWiFi;
+    }
 
     bool networkEnabled() {
         switch (networkType()) {

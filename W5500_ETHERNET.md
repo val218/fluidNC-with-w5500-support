@@ -56,6 +56,13 @@ Look for `Ethernet link up` and `Ethernet IP is 192.168.10.x`, then
 
 WiFi is off after this. To go back: `$network/type=WiFi`, then `$bye` (over USB).
 
+If `config.yaml` has no `ethernet:` section (for example after flashing a
+default config), the board uses WiFi instead even with `$network/type=Ethernet`
+(`[MSG:WARN: ... using WiFi so the board stays reachable]`): your saved WiFi
+network, or else its own **FluidNC** access point at `http://192.168.0.1`,
+where you can upload the right config.yaml. Ethernet comes back by itself once
+the config has the `ethernet:` section.
+
 ---
 
 **Contents**

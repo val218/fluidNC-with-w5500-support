@@ -726,6 +726,9 @@ namespace WebUI {
             //stop active services
             // wifi_services.end();
 
+            if (ethernetFallbackToWiFi()) {
+                log_warn("$network/type is Ethernet but config.yaml has no ethernet: section - using WiFi so the board stays reachable");
+            }
             if (networkType() != NetworkTypeWiFi) {
                 log_info("WiFi is disabled ($network/type is Ethernet)");
                 return;

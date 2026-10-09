@@ -21,6 +21,7 @@ namespace WebUI {
 
     extern EnumSetting* _network_type;
     NetworkType         networkType();
+    bool                ethernetFallbackToWiFi();
 
     // True if the currently-selected network interface ($network/type) is
     // turned on, regardless of link/IP state. Services like TelnetServer
