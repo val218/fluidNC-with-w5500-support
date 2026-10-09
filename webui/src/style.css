@@ -59,12 +59,19 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
 .tabs { display: none; }
 .layout {
   flex: 1; display: grid; gap: 10px; padding: 10px; min-height: 0;
-  grid-template-columns: minmax(320px, 360px) 1fr minmax(300px, 360px);
-  grid-template-rows: 1fr 1fr;
-  grid-template-areas: "control viewer files" "control viewer console";
-  height: calc(100vh - 92px - var(--mon-h, 122px));
+  grid-template-columns: minmax(320px, 360px) 1fr minmax(300px, 380px);
+  grid-template-rows: auto 1.25fr 1fr;
+  grid-template-areas: "control viewer machine" "control viewer files" "control viewer console";
+  height: calc(100vh - 92px - var(--mon-h, 74px));
 }
 .control { grid-area: control; overflow-y: auto; }
+.machine { grid-area: machine; }
+.machine .panel-head { margin: 6px 0 4px; }
+.machine .grid-btn { gap: 5px; }
+.machine .grid-btn .btn { padding: 5px 8px; }
+.machine .spindle .btn { padding: 5px 9px; }
+.machine .status-line { margin: 0; font-size: 12px; }
+.files, .console { min-height: 0; }
 .viewer { grid-area: viewer; display: flex; flex-direction: column; min-height: 0; }
 .files { grid-area: files; display: flex; flex-direction: column; min-height: 0; }
 .console { grid-area: console; display: flex; flex-direction: column; min-height: 0; }
@@ -77,12 +84,12 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
 @media (max-width: 1199px) {
   .layout {
     grid-template-columns: minmax(300px, 360px) 1fr;
-    grid-template-rows: minmax(460px, 62vh) minmax(320px, auto);
-    grid-template-areas: "control viewer" "files console";
+    grid-template-rows: auto auto minmax(320px, auto);
+    grid-template-areas: "control viewer" "machine viewer" "files console";
     height: auto;
     flex: none;
   }
-  .control { max-height: 62vh; }
+  .control { max-height: none; }
 }
 /* phone: one pane at a time, tab bar */
 @media (max-width: 759px) {
@@ -95,12 +102,13 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: v
     border-bottom: 2px solid transparent; font-weight: 600;
   }
   .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
-  .monitor { margin: 0 8px; height: 96px; }
+  .monitor { margin: 0 8px; height: 58px; }
   .mon-side { min-width: 150px; }
   .layout { display: block; padding: 8px; height: auto; flex: none; }
   .layout > .panel { display: none; }
   .layout > .panel.shown { display: flex; flex-direction: column; }
-  .control.shown { display: block; max-height: none; }
+  .control.shown, .machine.shown { display: block; max-height: none; }
+  .machine.shown { margin-top: 8px; }
   .viewer.shown { height: calc(100vh - 140px); }
   .files.shown, .console.shown { min-height: calc(100vh - 150px); }
   .top { padding: 6px 10px; gap: 8px; }
@@ -177,7 +185,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ---------- files ---------- */
 .file-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.file-list { list-style: none; margin: 8px 0 0; padding: 0; overflow-y: auto; flex: 1; border-top: 1px solid var(--line); }
+.file-list { list-style: none; margin: 8px 0 0; padding: 0; overflow-y: auto; flex: 1; min-height: 72px; border-top: 1px solid var(--line); }
 .file-list li { display: flex; gap: 8px; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; align-items: center; }
 .file-list li:hover { background: var(--panel-2); }
 .file-list li.sel { background: #0d2a45; outline: 1px solid var(--accent); }
@@ -192,7 +200,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 /* ---------- console ---------- */
 .log {
   flex: 1; margin: 0; overflow-y: auto; background: var(--bg); border: 1px solid var(--line);
-  border-radius: 6px; padding: 8px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; min-height: 160px;
+  border-radius: 6px; padding: 8px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; min-height: 60px;
 }
 .log .tx { color: var(--accent); }
 .log .err { color: var(--err); }
@@ -201,18 +209,45 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .cmd { display: flex; gap: 6px; margin-top: 8px; }
 .cmd input { flex: 1; font-family: var(--mono); }
 
+/* ---------- short screens (laptops ~768-820 px tall): tighten so nothing scrolls ---------- */
+@media (min-width: 760px) and (max-height: 860px) {
+  .top { padding: 2px 14px; }
+  .brand-logo { height: 38px; }
+  .layout { gap: 8px; padding: 8px 10px; height: calc(100vh - 74px - var(--mon-h, 74px)); }
+  .panel { padding: 8px 10px; }
+  .panel-head { margin: 5px 0 4px; }
+  .dro { gap: 4px; }
+  .axis { padding: 3px 8px; }
+  .axis .name { font-size: 17px; }
+  .axis .wpos { font-size: 20px; }
+  .axis .z0 { padding: 3px 7px; }
+  .dro-actions { margin-top: 4px; gap: 5px; }
+  .dro-actions .btn { padding: 5px 8px; }
+  .j { min-height: 38px; font-size: 15px; }
+  .jog, .jog-xy { gap: 5px; }
+  .jog-opts { margin-top: 5px; }
+  .ovr { gap: 3px; }
+  .ovr button { padding: 2px 6px; }
+  .file-list li { padding: 6px; }
+  .foot { padding: 2px 14px 4px; }
+}
+.file-run-btns { flex-wrap: nowrap; }
+.file-run-btns .btn { padding: 5px 8px; white-space: nowrap; flex: 0 1 auto; }
+
 /* ---------- axis monitor (bottom strip) ---------- */
 .monitor {
-  display: flex; gap: 10px; margin: 0 10px; padding: 6px 10px; height: 112px;
+  display: flex; gap: 10px; margin: 0 10px; padding: 4px 10px; height: 64px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
 }
 .monitor.collapsed { height: auto; }
 .monitor.collapsed .mon-chart, .monitor.collapsed .mon-axes, .monitor.collapsed .mon-link { display: none; }
-.mon-side { display: flex; flex-direction: column; gap: 3px; min-width: 190px; }
+.monitor.collapsed { padding: 3px 10px; }
+.mon-side { display: flex; flex-direction: column; gap: 2px; min-width: 200px; justify-content: center; }
+.mon-top { display: flex; align-items: center; gap: 10px; }
 .mon-toggle { background: none; border: 0; color: var(--muted); padding: 0; text-align: left; cursor: pointer;
   font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
-.mon-link, .mon-axis { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.mon-axes { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.mon-link, .mon-axis { display: flex; align-items: center; gap: 5px; font-size: 11px; line-height: 1.2; }
+.mon-axes { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
 .mon-axis b { width: 12px; }
 .mon-v { font-family: var(--mono); color: var(--text); min-width: 52px; text-align: right; }
 .mon-chart { flex: 1; min-width: 0; position: relative; }

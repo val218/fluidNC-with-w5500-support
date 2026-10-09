@@ -20,10 +20,19 @@ private:
     // not enough: line noise at power-up produces those.
     bool _peer_spoke = false;
 
-    // Traffic timestamps (millis) for link-presence detection (PendantLink).
-    volatile uint32_t _last_rx_ms = 0;
-    volatile uint32_t _last_tx_ms = 0;
-    volatile bool     _rx_seen    = false;
+    // Link-presence detection (PendantLink). Only *recognisable* peer traffic
+    // counts: the pendant's status poll (XON immediately followed by '?') or a
+    // complete command line. A floating/unplugged RX pin produces noise bytes,
+    // which are counted separately so noise never looks like a pendant.
+    volatile uint32_t _last_rx_ms   = 0;  // last recognised peer activity
+    volatile uint32_t _last_tx_ms   = 0;
+    volatile bool     _rx_seen      = false;
+    volatile uint32_t _xon_ms       = 0;
+    volatile uint32_t _pings        = 0;
+    volatile uint32_t _lines        = 0;
+    volatile uint32_t _noise        = 0;  // bytes that no FluidNC peer sends
+    volatile uint32_t _rx_bytes     = 0;
+    void              note_rx(int c);
 
     static constexpr int _ack_timeout = 2000;
 
@@ -31,6 +40,10 @@ public:
     uint32_t last_rx_ms() const { return _last_rx_ms; }
     uint32_t last_tx_ms() const { return _last_tx_ms; }
     bool     rx_seen() const { return _rx_seen; }
+    uint32_t pings() const { return _pings; }
+    uint32_t lines() const { return _lines; }
+    uint32_t noise() const { return _noise; }
+    uint32_t rx_bytes() const { return _rx_bytes; }
 
     UartChannel(objnum_t num, bool addCR = false);
 

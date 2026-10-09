@@ -82,7 +82,7 @@ Firmware is built automatically by GitHub Actions on every push to this branch.
 
 | File | Use |
 |---|---|
-| `merged-flash.bin` | Fresh board. Bootloader + partitions + firmware + filesystem, flash at `0x0`. **Overwrites `config.yaml` with the default — back yours up first.** |
+| `merged-flash.bin` | Fresh board. Bootloader + partitions + firmware + filesystem, flash at `0x0`. **Overwrites `config.yaml` with the dpCREATOR R2/R3 example config (`example_configs/dpcreator_r2_r3_w5500.yaml`) - back yours up first if you changed it.** |
 | `firmware.bin` | Board already running FluidNC. Flash at `0x10000` or upload via WebUI. Keeps config and settings. |
 | `firmware.elf` | Debug symbols, only needed to decode a crash backtrace. |
 

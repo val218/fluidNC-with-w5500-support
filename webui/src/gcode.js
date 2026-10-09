@@ -22,7 +22,8 @@ const Gcode = (() => {
   // Parses text in chunks so large files don't freeze the page.
   // onProgress(fraction) is called between chunks.
   async function parse(text, { rapidRate = 3000, onProgress } = {}) {
-    const feed = new Grow(Float32Array), feedOff = new Grow(Uint32Array, 4096);
+    const feed = new Grow(Float32Array), feedOff = new Grow(Uint32Array, 4096), feedCum = new Grow(Float32Array, 4096);
+    let est = 0;
     const rapid = new Grow(Float32Array), rapidOff = new Grow(Uint32Array, 4096);
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
 
@@ -37,10 +38,11 @@ const Gcode = (() => {
     const seg = (isRapid, x1, y1, z1, x2, y2, z2, off) => {
       const d = Math.hypot(x2 - x1, y2 - y1, z2 - z1);
       if (d === 0) return;
-      if (isRapid) { rapid.push(x1, y1, z1, x2, y2, z2); rapidOff.push(off); rapidLen += d; }
+      if (isRapid) { rapid.push(x1, y1, z1, x2, y2, z2); rapidOff.push(off); rapidLen += d; est += d / rapidRate; }
       else {
         feed.push(x1, y1, z1, x2, y2, z2); feedOff.push(off); feedLen += d;
-        if (s.f > 0) feedTime += d / s.f;
+        if (s.f > 0) { feedTime += d / s.f; est += d / s.f; }
+        feedCum.push(est); // estimated minutes from job start to the end of this cut
       }
       extend(x1, y1, z1); extend(x2, y2, z2);
     };
@@ -114,7 +116,7 @@ const Gcode = (() => {
     }
     if (!Number.isFinite(min[0])) { min.fill(0); max.fill(0); }
     return {
-      feed: feed.done(), feedOff: feedOff.done(),
+      feed: feed.done(), feedOff: feedOff.done(), feedCum: feedCum.done(),
       rapid: rapid.done(), rapidOff: rapidOff.done(),
       min, max, bytes: total, lines, tools,
       feedLen, rapidLen,
@@ -167,7 +169,7 @@ const Gcode = (() => {
   // flat 2D job: small enough to fetch while a job is running from the card.
   function fromViz(text) {
     const Z = 0.2; // just above the grid so the outline does not vanish into it
-    const feed = new Grow(Float32Array), feedOff = new Grow(Uint32Array, 4096);
+    const feed = new Grow(Float32Array), feedOff = new Grow(Uint32Array, 4096), feedCum = new Grow(Float32Array, 4096);
     const min = [Infinity, Infinity, Z], max = [-Infinity, -Infinity, Z];
     let px = null, py = null, n = 0, feedLen = 0;
     for (const line of text.split(/\r?\n/)) {
@@ -176,7 +178,7 @@ const Gcode = (() => {
       const x = parseFloat(line), y = parseFloat(line.slice(c + 1));
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       if (px !== null && (x !== px || y !== py)) {
-        feed.push(px, py, Z, x, y, Z); feedOff.push(n); feedLen += Math.hypot(x - px, y - py);
+        feed.push(px, py, Z, x, y, Z); feedOff.push(n); feedLen += Math.hypot(x - px, y - py); feedCum.push(feedLen);
       }
       if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
       if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
@@ -184,7 +186,7 @@ const Gcode = (() => {
     }
     if (!Number.isFinite(min[0])) { min.fill(0); max.fill(0); }
     return {
-      feed: feed.done(), feedOff: feedOff.done(), rapid: new Float32Array(0), rapidOff: new Uint32Array(0),
+      feed: feed.done(), feedOff: feedOff.done(), feedCum: feedCum.done(), rapid: new Float32Array(0), rapidOff: new Uint32Array(0),
       min, max, bytes: n, lines: n, tools: 0, feedLen, rapidLen: 0, estMinutes: NaN, flat: true,
     };
   }

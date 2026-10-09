@@ -146,33 +146,75 @@ const Viewer = (() => {
       if (o) { pathGroup.remove(o); o.geometry && o.geometry.dispose(); o.material && o.material.dispose(); }
     }
     feedLines = rapidLines = bbox = null;
-    job = null; baseColors = null; doneSegs = 0;
+    job = null; baseColors = null; doneSegs = 0; trackIdx = -1;
     dirty = true;
   }
 
-  // fraction 0..1 of the file processed -> tint completed feed segments
-  function setProgress(fraction) {
-    if (!job || !feedLines) return;
+  // Job progress from where the tool really is, not from how far FluidNC has
+  // read the file (it reads ahead into the planner). The file position gives a
+  // candidate segment; the segment nearest the tool, searched in a window
+  // behind it, is the one being cut. Progress = estimated time up to that point
+  // on the segment / total estimated time. Returns 0..1, or null if unknown.
+  let trackIdx = -1;
+  const LINES_BACK = 40; // FluidNC's planner holds far fewer G-code lines than this
+  function setProgress(fraction, wpos) {
+    if (!job || !feedLines || !job.feed.length) return null;
+    const offs = job.feedOff, f = job.feed, nSeg = offs.length;
     const byte = fraction * job.bytes;
-    const offs = job.feedOff;
-    let lo = 0, hi = offs.length; // count segments with offset < byte
+    let lo = 0, hi = nSeg; // first segment whose line starts at/after the read pointer
     while (lo < hi) { const mid = (lo + hi) >> 1; if (offs[mid] < byte) lo = mid + 1; else hi = mid; }
-    const n = lo;
-    if (n === doneSegs) return;
-    const col = feedLines.geometry.attributes.color;
-    const a = col.array;
-    if (n > doneSegs) {
-      for (let s = doneSegs; s < n; s++) {
-        for (let v = 0; v < 6; v += 3) {
-          a[s * 6 + v] = COLOR_DONE.r; a[s * 6 + v + 1] = COLOR_DONE.g; a[s * 6 + v + 2] = COLOR_DONE.b;
-        }
+    const ahead = Math.min(lo, nSeg - 1);
+    let idx = ahead, t = 1;
+    if (wpos && wpos.every(Number.isFinite)) {
+      const [px, py, pz] = wpos;
+      const flat = !!job.flat;
+      // window: segments of the last LINES_BACK lines before the read pointer,
+      // never before the segment we last matched (the tool only moves forward)
+      let lo2 = ahead, lines = 0, lastOff = -1;
+      while (lo2 > 0 && lines < LINES_BACK) {
+        lo2--;
+        if (offs[lo2] !== lastOff) { lines++; lastOff = offs[lo2]; }
       }
-    } else {
-      a.set(baseColors.subarray(n * 6, doneSegs * 6), n * 6);
+      if (trackIdx > lo2 && trackIdx <= ahead) lo2 = trackIdx;
+      const hi2 = Math.min(nSeg - 1, ahead + 5);
+      let best = Infinity, bestI = -1, bestT = 0;
+      for (let i = lo2; i <= hi2; i++) {
+        const k = i * 6;
+        const ax = f[k], ay = f[k + 1], az = flat ? pz : f[k + 2];
+        const dx = f[k + 3] - ax, dy = f[k + 4] - ay, dz = flat ? 0 : f[k + 5] - az;
+        const len2 = dx * dx + dy * dy + dz * dz;
+        let u = len2 ? ((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / len2 : 0;
+        u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const ex = ax + u * dx - px, ey = ay + u * dy - py, ez = az + u * dz - pz;
+        const d2 = ex * ex + ey * ey + ez * ez;
+        if (d2 < best - 1e-6) { best = d2; bestI = i; bestT = u; } // ties: earliest after the last match
+      }
+      if (bestI >= 0 && best < 4) { idx = bestI; t = bestT; trackIdx = idx; }      // within 2 mm: on the path
+      else if (trackIdx >= 0 && trackIdx <= ahead) { idx = trackIdx; t = 1; }      // rapid / off path: hold
     }
-    doneSegs = n;
-    col.needsUpdate = true;
-    dirty = true;
+    // tint finished cuts
+    const n = idx;
+    if (n !== doneSegs) {
+      const col = feedLines.geometry.attributes.color, a = col.array;
+      if (n > doneSegs) {
+        for (let s = doneSegs; s < n; s++) {
+          for (let v = 0; v < 6; v += 3) {
+            a[s * 6 + v] = COLOR_DONE.r; a[s * 6 + v + 1] = COLOR_DONE.g; a[s * 6 + v + 2] = COLOR_DONE.b;
+          }
+        }
+      } else {
+        a.set(baseColors.subarray(n * 6, doneSegs * 6), n * 6);
+      }
+      doneSegs = n;
+      col.needsUpdate = true;
+      dirty = true;
+    }
+    const cum = job.feedCum;
+    if (!cum || !cum.length) return null;
+    const total = cum[cum.length - 1];
+    if (!(total > 0)) return null;
+    const start = idx > 0 ? cum[idx - 1] : 0;
+    return Math.min(1, Math.max(0, (start + t * (cum[idx] - start)) / total));
   }
 
   function setTool(x, y, z) {

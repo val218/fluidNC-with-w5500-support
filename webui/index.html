@@ -83,25 +83,6 @@
       <label class="field">Feed <input id="jogfeed" type="number" min="10" step="10" value="1500"> mm/min</label>
     </div>
 
-    <div class="panel-head"><h2>Machine</h2></div>
-    <div class="grid-btn">
-      <button data-cmd="home" class="btn">Home</button>
-      <button data-cmd="unlock" class="btn">Unlock</button>
-      <button data-cmd="reset" class="btn warn">Reset</button>
-      <button data-cmd="hold" class="btn">Hold</button>
-      <button data-cmd="resume" class="btn">Resume</button>
-      <button data-cmd="stop" class="btn danger">Stop</button>
-    </div>
-
-    <div class="panel-head"><h2>Spindle &amp; coolant</h2></div>
-    <div class="spindle">
-      <label class="field">S <input id="rpm" type="number" min="0" step="100" value="12000"></label>
-      <button data-cmd="spindle-cw" class="btn">CW</button>
-      <button data-cmd="spindle-off" class="btn">Off</button>
-      <button data-cmd="flood" class="btn" id="btn-flood">Flood</button>
-      <button data-cmd="mist" class="btn" id="btn-mist">Mist</button>
-    </div>
-
     <div class="panel-head"><h2>Overrides</h2></div>
     <div class="ovr">
       <div class="ovr-row"><span>Feed</span><button data-ovr="0x92">−10</button><button data-ovr="0x94">−1</button>
@@ -111,7 +92,6 @@
       <div class="ovr-row"><span>Spindle</span><button data-ovr="0x9B">−10</button><button data-ovr="0x9D">−1</button>
         <b id="ov-s">100%</b><button data-ovr="0x9C">+1</button><button data-ovr="0x9A">+10</button><button data-ovr="0x99">100</button></div>
     </div>
-    <div class="status-line" id="feedspeed">F 0 · S 0</div>
     <div class="pins" id="pins"></div>
   </section>
 
@@ -131,6 +111,29 @@
     <div class="viewer-canvas" id="viewer"></div>
     <div class="viewer-info" id="viewer-info"></div>
     <div class="progress"><div id="progress-bar"></div></div>
+  </section>
+
+  <!-- ======== RIGHT TOP: machine, spindle, overrides ======== -->
+  <section class="panel machine" data-pane="control">
+    <div class="panel-head"><h2>Machine</h2><span class="status-line" id="feedspeed">F 0 · S 0</span></div>
+    <div class="grid-btn">
+      <button data-cmd="home" class="btn">Home</button>
+      <button data-cmd="unlock" class="btn">Unlock</button>
+      <button data-cmd="reset" class="btn warn">Reset</button>
+      <button data-cmd="hold" class="btn">Hold</button>
+      <button data-cmd="resume" class="btn">Resume</button>
+      <button data-cmd="stop" class="btn danger">Stop</button>
+    </div>
+
+    <div class="panel-head"><h2>Spindle &amp; coolant</h2></div>
+    <div class="spindle">
+      <label class="field">S <input id="rpm" type="number" min="0" step="100" value="12000"></label>
+      <button data-cmd="spindle-cw" class="btn">CW</button>
+      <button data-cmd="spindle-off" class="btn">Off</button>
+      <button data-cmd="flood" class="btn" id="btn-flood">Flood</button>
+      <button data-cmd="mist" class="btn" id="btn-mist">Mist</button>
+    </div>
+
   </section>
 
   <!-- ======== RIGHT: files + console ======== -->
@@ -157,7 +160,7 @@
         <button class="btn accent" id="run">▶ Run</button>
         <button class="btn" id="preview">Preview</button>
         <button class="btn" id="edit">Edit</button>
-        <button class="btn" id="make-viz" title="Rebuild the TabUI pendant preview (.viz) for this file (done automatically after uploads)">Pendant .viz</button>
+        <button class="btn" id="make-viz" title="Rebuild the TabUI pendant preview (.viz) for this file (done automatically after uploads)">.viz</button>
         <button class="btn danger" id="del">Delete</button>
       </div>
     </div>
@@ -178,8 +181,10 @@
 
 <section class="monitor" id="monitor">
   <div class="mon-side">
-    <button class="mon-toggle" id="mon-toggle" title="Show / hide the axis monitor">Axis monitor ▾</button>
-    <div class="mon-link" title="Blinks on every status report from the controller"><span class="led"></span> Link <span class="mon-rate muted">idle</span></div>
+    <div class="mon-top">
+      <button class="mon-toggle" id="mon-toggle" title="Show / hide the axis monitor">Axis monitor ▾</button>
+      <div class="mon-link" title="Blinks on every status report from the controller"><span class="led"></span> Link <span class="mon-rate muted">idle</span></div>
+    </div>
     <div class="mon-axes"></div>
   </div>
   <div class="mon-chart"><canvas></canvas></div>

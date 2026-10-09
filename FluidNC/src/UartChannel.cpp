@@ -191,8 +191,28 @@ bool UartChannel::realtimeOkay(char c) {
     return _lineedit->realtime(c);
 }
 
+void UartChannel::note_rx(int c) {
+    uint32_t now = millis();
+    ++_rx_bytes;
+    if (c == 0x11) {
+        _xon_ms = now;
+    } else if (c == '?' && (now - _xon_ms) < 50) {
+        ++_pings;
+        _last_rx_ms = now;
+        _rx_seen    = true;
+    }
+    bool plausible = (c >= 0x20 && c < 0x7f) || c == '\r' || c == '\n' || c == '\t' || c == 0x11 || c == 0x13 || c == 0x18 ||
+                     (c >= 0x80 && c <= 0xA1);
+    if (!plausible) {
+        ++_noise;
+    }
+}
+
 bool UartChannel::lineComplete(char* line, char c) {
     if (_lineedit->step(c)) {
+        ++_lines;
+        _last_rx_ms = millis();
+        _rx_seen    = true;
         _peer_spoke     = true;
         _linelen        = _lineedit->finish();
         _line[_linelen] = '\0';
@@ -206,8 +226,7 @@ bool UartChannel::lineComplete(char* line, char c) {
 int UartChannel::read() {
     auto c = _uart->read();
     if (c >= 0) {
-        _last_rx_ms = millis();
-        _rx_seen    = true;
+        note_rx(c);
     }
     if (c == 0x11) {
         // 0x11 is XON.  If we receive that, it is a request to use software flow control

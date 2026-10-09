@@ -180,23 +180,33 @@
     $("#btn-flood").classList.toggle("on", st.acc.includes("F"));
     $("#btn-mist").classList.toggle("on", st.acc.includes("M"));
     $$('[data-cmd="spindle-cw"]').forEach((b) => b.classList.toggle("on", st.acc.includes("S")));
-    jobStatus(st);
+    jobStatus(st, w);
   });
 
   // ------------------------------------------------------------- job progress
-  function jobStatus(st) {
+  function jobStatus(st, wpos) {
     const running = st.sdPct !== undefined && !Number.isNaN(st.sdPct);
     const jobEl = $("#job");
     if (running) {
       if (!S.job || S.job.file !== st.sdFile) S.job = { file: st.sdFile, start: Date.now() };
       ensurePreview(st.sdFile);
-      const pct = Math.max(0, Math.min(100, st.sdPct));
+      const filePct = Math.max(0, Math.min(100, st.sdPct));
+      // Accurate %: where the tool is on the parsed path, weighted by estimated
+      // time. Falls back to FluidNC's file-read % (runs ahead of the tool by
+      // the planner buffer, and counts bytes, not machining time).
+      const [jfs, jpath] = jobFsPath(st.sdFile);
+      const onScreen = Viewer.job && $("#viewer-file").dataset.path === cacheKey(jfs, jpath);
+      const p = onScreen ? Viewer.setProgress(filePct / 100, wpos) : null;
+      const pct = p === null ? filePct : p * 100;
       const elapsed = (Date.now() - S.job.start) / 1000;
-      const eta = pct > 0.5 ? (elapsed * (100 - pct)) / pct : NaN;
+      // Page opened mid-job: measure the rate from the first % we saw.
+      if (S.job.p0 === undefined) S.job.p0 = pct;
+      const done = pct - S.job.p0;
+      const eta = done > 0.3 && elapsed > 5 ? (elapsed * (100 - pct)) / done : NaN;
       jobEl.hidden = false;
       jobEl.textContent = `${st.sdFile.split("/").pop()} · ${pct.toFixed(1)}% · ${fmtTime(elapsed)} · ETA ${fmtTime(eta)}`;
+      jobEl.title = `Tool position on the path: ${p === null ? "n/a" : (p * 100).toFixed(1) + "%"} · file read by FluidNC: ${filePct.toFixed(1)}%`;
       $("#progress-bar").style.width = pct + "%";
-      Viewer.setProgress(pct / 100);
     } else if (S.job) {
       // job finished or stopped
       if (idle()) {
@@ -591,7 +601,7 @@
   function setMonitor(open) {
     $("#monitor").classList.toggle("collapsed", !open);
     $("#mon-toggle").textContent = "Axis monitor " + (open ? "▾" : "▸");
-    document.documentElement.style.setProperty("--mon-h", open ? "122px" : "44px");
+    document.documentElement.style.setProperty("--mon-h", open ? "74px" : "40px");
     Monitor.setVisible(open);
     Prefs.set("monitor", open);
     requestAnimationFrame(() => Viewer.resize());
