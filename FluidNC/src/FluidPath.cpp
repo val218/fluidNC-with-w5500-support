@@ -85,7 +85,12 @@ SDMountState::SDMountState() {
         if (sd_failed_ec && (millis() - sd_failed_at) < sd_retry_holdoff_ms) {
             throw stdfs::filesystem_error { "Failed to mount SD card", sd_failed_ec };
         }
-        auto ec = sd_mount();
+        // Up to 5 open files: a running job, the WebUI / WebDAV / pendant
+        // reading or uploading, and a .viz build (input + output).  With the
+        // old limit of 2, a pendant preview read during a job left no handle
+        // for the .viz builder ("VizErr:cannot open").  A FIL is < 256 bytes
+        // here (FF_FS_TINY), so this costs well under 1 KB.
+        auto ec = sd_mount(5);
         if (ec) {
             sd_failed_ec = ec;
             sd_failed_at = millis();

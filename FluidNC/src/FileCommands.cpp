@@ -6,6 +6,7 @@
 #include "WebUI/Authentication.h"
 #include "Configuration/JsonGenerator.h"
 #include "InputFile.h"    // InputFile
+#include "VizGenerator.h"  // viz_job_started
 #include "Job.h"          // Job::
 #include "xmodem.h"       // xmodemReceive(), xmodemTransmit()
 #include "Protocol.h"     // pollingPaused
@@ -287,6 +288,7 @@ static Error runFile(const Volume& fs, const char* parameter, AuthenticationLeve
     // leader, not the inner job source whose processing ref this dispatch
     // holds. Job::dispatch_channel is that one -- see its declaration and
     // FluidNC issue #1862.
+    viz_job_started(theFile->path());  // preview for the pendant / WebUI if it has none yet
     Job::nest(theFile, &out, Job::dispatch_channel);
 
     return Error::Deferred;

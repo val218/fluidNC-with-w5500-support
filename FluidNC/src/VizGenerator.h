@@ -10,7 +10,7 @@
 //   Line 1+: <x>,<y>   (float, mm, machine coordinates, one per line)
 //
 // Commands from pendant:
-//   $Viz/Generate=/sd/file.nc   — generate viz (async, background task)
+//   $Viz/Generate=/sd/file.nc   — VizReady:<viz> if it exists, else build it (incremental)
 //   $Viz/Status=/sd/file.nc     — check if viz exists
 //   $Viz/Delete=/sd/file.nc     — delete cached viz (force regenerate)
 //
@@ -33,6 +33,7 @@ bool viz_handle_command(const char* line);
 //   $Viz/Refresh=/sd/file.nc  -> queue a rebuild; reports VizAutoBusy/VizAutoReady/VizAutoErr
 //   (Auto messages go to every channel except the pendant UART.)
 void viz_file_written(const std::string& path);  // any task; G-code on /sd only
-void viz_file_removed(const std::string& path);  // any task; deletes the .viz too
-void viz_poll();                                 // protocol task; runs one build when Idle
+void viz_file_removed(const std::string& path);
+void viz_job_started(const std::string& path);   // $SD/Run: build the job's preview if missing  // any task; deletes the .viz too
+void viz_poll();                                 // protocol task; advances the build a slice at a time
 void viz_init();

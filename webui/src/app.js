@@ -384,6 +384,7 @@
           $("#viewer-file").dataset.partial = "1";
           $("#load-full").hidden = false;
           $("#viewer-info").textContent = "No pendant .viz for this file - the path loads when the machine stops, or press Load path";
+          previewRetryAt = Date.now() + 4000;  // FluidNC is building it; look again shortly
         }
       }
     } catch (e) {
@@ -404,8 +405,8 @@
 
   // ------------------------------------------------------------- TabUI pendant .viz
   // The pendant shows a preview from "<file>.viz" next to the G-code on the SD card.
-  // FluidNC's VizGenerator builds it on request ($Viz/Generate=/sd/<file>). It runs
-  // on the protocol task and blocks motion briefly, so requests wait for Idle.
+  // FluidNC's VizGenerator builds it on request ($Viz/Generate=/sd/<file>), a few
+  // milliseconds at a time, so the controller keeps answering meanwhile.
   const GCODE_RE = /\.(nc|gcode|gc|ngc|tap|cnc|g)$/i;
   // The firmware queues the build itself whenever G-code lands on /sd (this UI,
   // a mapped network drive, the classic UI). Its messages say VizAuto* so the
@@ -422,12 +423,18 @@
     }
     if (k === "Busy") {
       const pct = /:(\d+)$/.exec(rest);
-      $("#viz-status").textContent = `Building pendant .viz ${name}` + (pct ? `: ${pct[1]}%` : "…") +
-        " - the controller does not take commands until it is done";
+      $("#viz-status").textContent = `Building pendant .viz ${name}` + (pct ? `: ${pct[1]}%` : "…");
       return;
     }
     if (k !== "Ready" && k !== "Err") return;
     $("#viz-status").textContent = "";
+    if (k === "Ready") {
+      // The running job's preview was just built (FluidNC builds it when a job
+      // starts without one): show it instead of the "no .viz" placeholder.
+      const vp = rest.split(":")[0].replace(/\.viz$/, "");
+      const cur = $("#viewer-file").dataset;
+      if (cur.partial && !Viewer.job && cur.path === "sd:" + vp.replace(/^\/sd/i, "")) delete cur.path;
+    }
     if (!auto) return;  // pendant's own requests: leave them to the pendant
     if (k === "Ready") {
       const pts = rest.split(":")[1];
@@ -468,7 +475,7 @@
     const big = it.size > 2 * 1024 * 1024;
     const msg =
       `Build the TabUI pendant preview for ${it.name} (${fmtSize(it.size)})?\n\n` +
-      "The controller reads the whole file and does not take commands until it is done" +
+      "The controller reads the whole file in the background" +
       (big ? " - for a file this size that can take a minute or more." : ".") +
       "\nIt starts only while the machine is not moving and no job is running.";
     if (!confirm(msg)) return;
