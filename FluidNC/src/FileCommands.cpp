@@ -96,11 +96,30 @@ static Error showLocalFile(const char* parameter, AuthenticationLevel auth_level
     return showFile(LocalFS, parameter, auth_level, out);
 }
 
-// This is used by pendants to get partial file contents for preview
+// This is used by pendants to get partial file contents for preview.
+//
+// Runs in any state: while a job runs (from another channel) it is executed
+// on the polling task, so the pendant can load the running job's .viz and
+// scroll its G-code. During a job a request returns at most
+// SHOWSOME_JOB_MAX lines, keeping each call short.
+//
+// The reply always carries "path" and "firstline" (also with "error"), so
+// the receiver can tell which request it answers, and "eof": "1" when the
+// end of the file was reached (or on error), "0" when there is more.
+static const uint32_t SHOWSOME_JOB_MAX = 100;
+
+// Sequential batches continue where the previous request for that file
+// stopped instead of re-reading the file from the start. Two slots: a .viz
+// and a G-code text preview are often loaded alternately.
+struct ShowSomeResume {
+    std::string path;
+    uint32_t    line = 0;
+    size_t      pos = 0, size = 0;
+};
+static ShowSomeResume ss_slot[2];
+static int            ss_next = 0;
+
 static Error fileShowSome(const char* parameter, AuthenticationLevel auth_level, Channel& out) {
-    if (notIdleOrAlarm()) {
-        return Error::IdleError;
-    }
     if (!parameter || !*parameter) {
         log_error_to(out, "Missing argument");
         return Error::InvalidValue;
@@ -119,15 +138,6 @@ static Error fileShowSome(const char* parameter, AuthenticationLevel auth_level,
         return Error::InvalidValue;
     }
 
-    // Args is the list of lines to display
-    // N means the first N lines
-    // N:M means lines N through M inclusive
-    if (line_range.empty()) {
-        log_error_to(out, "Missing line count");
-        return Error::InvalidValue;
-    }
-    JSONencoder j(&out, "FileLines");  // Encapsulated JSON
-
     std::string_view first;
     string_util::split_prefix(line_range, first, ':');
     if (line_range.empty()) {
@@ -141,52 +151,104 @@ static Error fileShowSome(const char* parameter, AuthenticationLevel auth_level,
         log_error_to(out, "Last line is less than first line");
         return Error::InvalidValue;
     }
+    if (Job::active() && lastline - firstline > SHOWSOME_JOB_MAX) {
+        lastline = firstline + SHOWSOME_JOB_MAX;
+    }
 
+    std::string fn(args);
     const char* error = "";
+    bool        eof   = false;
+
+    JSONencoder j(&out, "FileLines");  // Encapsulated JSON
     j.begin();
     j.begin_array("file_lines");
 
-    InputFile*  theFile;
-    Error       err;
-    std::string fn(args);
-    if ((err = openFile(SD, fn.c_str(), out, theFile)) != Error::Ok) {
+    InputFile* theFile = nullptr;
+    try {
+        theFile = new InputFile(SD, (fn[0] == '/' ? fn : "/" + fn).c_str());
+    } catch (...) {
+        theFile = nullptr;
+    }
+    if (!theFile) {
         error = "Cannot open file";
     } else {
-        char     fileLine[255];
-        Error    res     = Error::Ok;
-        uint32_t linenum = 0;
-        // Sequential batches (a pendant loading a .viz 500 lines at a time)
-        // continue where the previous request stopped instead of re-reading
-        // the file from the start every time.
-        static std::string ss_path;
-        static uint32_t    ss_line = 0;
-        static size_t      ss_pos = 0, ss_size = 0;
-        if (ss_line > 0 && ss_path == fn && ss_size == theFile->size() && firstline >= ss_line) {
-            theFile->set_position(ss_pos);
-            linenum = ss_line;
+        const size_t fsize   = theFile->size();
+        uint32_t     linenum = 0;
+        int          slot    = -1;
+        for (int i = 0; i < 2; ++i) {
+            if (ss_slot[i].line > 0 && ss_slot[i].path == fn && ss_slot[i].size == fsize && firstline >= ss_slot[i].line) {
+                slot = i;
+            }
         }
-        for (; linenum < lastline && (res = theFile->readLine(fileLine, 255)) == Error::Ok; ++linenum) {
-            feed_watchdog();  // Skipping to a late firstline reads the file from the start
+        if (slot >= 0) {
+            theFile->set_position(ss_slot[slot].pos);
+            linenum = ss_slot[slot].line;
+        } else {
+            slot    = ss_next;
+            ss_next = 1 - ss_next;
+        }
+        // Lines longer than the buffer are cut, not an error: one long
+        // comment must not hide the rest of the file.
+        char fileLine[256];
+        for (; linenum < lastline; ++linenum) {
+            size_t len = 0;
+            int    c   = -1;
+            bool   got = false;
+            for (;;) {
+                char ch;  // read(buf,1): read() returns bytes >= 0x80 as negative (EOF)
+                if (theFile->read(&ch, 1) != 1) {
+                    c = -1;
+                    break;
+                }
+                c   = static_cast<uint8_t>(ch);
+                got = true;
+                if (c == '\r') {
+                    continue;
+                }
+                if (c == '\n') {
+                    break;
+                }
+                if (len < sizeof(fileLine) - 1) {
+                    fileLine[len++] = c;
+                }
+            }
+            fileLine[len] = '\0';
+            if (theFile->read_failed()) {
+                error = errorString(Error::FsFailedRead);
+                break;
+            }
+            if (!got) {
+                eof = true;
+                break;
+            }
+            if ((linenum & 63) == 0) {
+                feed_watchdog();  // Skipping to a late firstline reads the file from the start
+            }
             if (linenum >= firstline) {
                 j.string(fileLine);
             }
+            if (c < 0) {  // last line had no newline
+                ++linenum;
+                eof = true;
+                break;
+            }
         }
-        ss_path = fn;
-        ss_line = linenum;
-        ss_pos  = theFile->position();
-        ss_size = theFile->size();
+        if (!eof && !*error && theFile->position() >= fsize) {
+            eof = true;
+        }
+        ss_slot[slot].path = fn;
+        ss_slot[slot].line = linenum;
+        ss_slot[slot].pos  = theFile->position();
+        ss_slot[slot].size = fsize;
         delete theFile;
-        if (res != Error::Eof && res != Error::Ok) {
-            error = errorString(res);
-        }
     }
     j.end_array();
     if (*error) {
         j.member("error", error);
-    } else {
-        j.member("path", fn.c_str());
-        j.member("firstline", firstline);
     }
+    j.member("path", fn.c_str());
+    j.member("firstline", firstline);
+    j.member("eof", (eof || *error) ? "1" : "0");
 
     j.end();
     return Error::Ok;
@@ -727,7 +789,7 @@ void make_file_commands() {
     new WebCommand(NULL, WEBCMD, WU, NULL, "LocalFS/Hashes", showLocalFSHashes);
 
     new WebCommand("path", WEBCMD, WU, NULL, "File/SendJSON", fileSendJson);
-    new WebCommand("path", WEBCMD, WU, NULL, "File/ShowSome", fileShowSome);
+    new WebReportCommand("path", WEBCMD, WU, NULL, "File/ShowSome", fileShowSome);  // any state; reads only
     new WebCommand("path", WEBCMD, WU, NULL, "File/ShowHash", fileShowHash);
     new WebCommand("path", WEBCMD, WU, "ESP221", "SD/Show", showSDFile);
     new WebCommand("path", WEBCMD, WU, "ESP220", "SD/Run", runSDFile, nullptr);
