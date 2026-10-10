@@ -16,6 +16,7 @@
 #include "PendantLink.h"      // pendant_channel
 #include "UartChannel.h"
 #include "Logging.h"          // message_queue, MsgLevelNone
+#include "Error.h"
 #include "FluidPath.h"        // keeps the SD card mounted while we use it
 #include "Planner.h"          // plan_get_block_buffer_available
 #include "Machine/MachineConfig.h"  // config->_planner_blocks
@@ -835,8 +836,84 @@ static void start_next() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Job start waits for the pendant's preview. $SD/Run with a pendant connected
+// does not start the file right away: the pendant is told which file is
+// coming ([MSG:VZJ:<file>]), asks for the path ($Viz/Push), and once it is on
+// its screen says so ($Viz/Shown=<file>). Then the job starts. It also starts
+// if the pendant goes quiet for 15 s (no build / push progress), disconnects,
+// or does not know VZJ (older firmware). Reset cancels the waiting job.
+// ---------------------------------------------------------------------------
+struct PendingJob {
+    bool        active = false;
+    bool        ready  = false;
+    Channel*    in     = nullptr;  // the opened file
+    Channel*    out    = nullptr;
+    Channel*    ack    = nullptr;
+    std::string nc;
+    uint32_t    deadline = 0;
+};
+static PendingJob        _pj;
+static const uint32_t    job_wait_ms = 15000;
+
+static bool pendant_connected() { return strcmp(pendant_state_name(), "connected") == 0; }
+
+bool viz_hold_job(Channel* in, const std::string& path, Channel* out, Channel* ack) {
+    if (_pj.active || Job::active() || !pendant_connected() || !on_sd(path) || !is_gcode(path)) return false;
+    _pj          = PendingJob();
+    _pj.active   = true;
+    _pj.in       = in;
+    _pj.out      = out;
+    _pj.ack      = ack;
+    _pj.nc       = path;
+    _pj.deadline = millis() + job_wait_ms;
+    to_pendant("[MSG:VZJ:" + path + "]");
+    allChannels.print_except("[MSG:JobWait:starting once the pendant shows the preview]\r\n", static_cast<Channel*>(pendant_channel()));
+    return true;
+}
+
+void viz_cancel_pending_job() {
+    if (!_pj.active) return;
+    if (_pj.ack) {
+        _pj.ack->ack(Error::Reset);
+        _pj.ack->release_processing_ref();
+    }
+    delete _pj.in;
+    _pj = PendingJob();
+    allChannels.print("[MSG:JobWait:cancelled]\r\n");
+}
+
+static void pending_poll() {
+    if (!_pj.active) return;
+    uint32_t now = millis();
+    if (state_is(State::Alarm) || state_is(State::ConfigAlarm) || state_is(State::Critical)) {
+        viz_cancel_pending_job();
+        return;
+    }
+    // Building or sending this file's preview counts as progress.
+    bool busy = (_b.active && _b.nc == _pj.nc) || (_p.active && _p.path == viz_path(_pj.nc));
+    if (busy) _pj.deadline = now + job_wait_ms;
+    bool timeout = (int32_t)(now - _pj.deadline) >= 0;
+    if (!_pj.ready && !timeout && pendant_connected()) return;
+    if (!state_is(State::Idle)) return;  // e.g. a jog still finishing
+    if (!_pj.ready) {
+        allChannels.print(timeout ? "[MSG:JobWait:pendant did not confirm - starting]\r\n"
+                                  : "[MSG:JobWait:pendant disconnected - starting]\r\n");
+    }
+    Channel* in = _pj.in; Channel* out = _pj.out; Channel* ack = _pj.ack;
+    _pj = PendingJob();
+    Job::nest(in, out, ack);
+}
+
+static void viz_job_shown(const std::string& arg) {
+    std::string p = sd_norm(arg);
+    if (p.size() > 4 && p.compare(p.size() - 4, 4, ".viz") == 0) p.resize(p.size() - 4);
+    if (_pj.active && p == _pj.nc) _pj.ready = true;
+}
+
 void viz_poll() {
     static uint32_t last_slice_ms = 0;
+    pending_poll();
     push_step();
     if (!_b.active) {
         if (_q_len == 0) return;
@@ -909,6 +986,7 @@ bool viz_handle_command(const char* line) {
     // Pendant: answer VizReady when the .viz exists, otherwise build it.
     if (strncmp(cmd, "Generate=", 9) == 0) { viz_generate(cmd + 9); return true; }
     if (strncmp(cmd, "Push=", 5) == 0) { viz_push_request(cmd + 5); return true; }
+    if (strncmp(cmd, "Shown=", 6) == 0) { viz_job_shown(cmd + 6); return true; }
     if (strncmp(cmd, "Delete=", 7) == 0) {
         std::string     p = sd_norm(cmd + 7);
         std::error_code ec;

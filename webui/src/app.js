@@ -77,6 +77,12 @@
       log(line, "msg");
       return;
     }
+    if ((m = /^\[MSG:JobWait:(.*)\]$/.exec(line))) {
+      // The board holds a job until the pendant shows its preview.
+      toast("Job: " + m[1], m[1].includes("cancel"));
+      log(line, "msg");
+      return;
+    }
     if ((m = /^\[MSG:Pendant:(\w+)\]$/.exec(line))) {
       setPendant(m[1]);
       return;

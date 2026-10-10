@@ -37,3 +37,10 @@ void viz_file_removed(const std::string& path);
 void viz_job_started(const std::string& path);   // $SD/Run: build the job's preview if missing  // any task; deletes the .viz too
 void viz_poll();                                 // protocol task; advances the build a slice at a time
 void viz_init();
+
+// $SD/Run with a pendant connected: hold the opened file until the pendant
+// shows its preview (see VizGenerator.cpp). true = held, the caller returns
+// Error::Deferred without Job::nest().
+class Channel;
+bool viz_hold_job(Channel* in, const std::string& path, Channel* out, Channel* ack);
+void viz_cancel_pending_job();  // reset

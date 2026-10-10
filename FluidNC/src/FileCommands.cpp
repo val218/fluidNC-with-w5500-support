@@ -351,6 +351,10 @@ static Error runFile(const Volume& fs, const char* parameter, AuthenticationLeve
     // holds. Job::dispatch_channel is that one -- see its declaration and
     // FluidNC issue #1862.
     viz_job_started(theFile->path());  // preview for the pendant / WebUI if it has none yet
+    // A connected pendant first gets the preview on screen; the job starts after.
+    if (viz_hold_job(theFile, theFile->path(), &out, Job::dispatch_channel)) {
+        return Error::Deferred;
+    }
     Job::nest(theFile, &out, Job::dispatch_channel);
 
     return Error::Deferred;

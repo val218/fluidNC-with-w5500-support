@@ -1200,6 +1200,7 @@ static void protocol_do_late_reset() {
     // (FluidNC issue #1861). Aborting here guarantees the stack is empty
     // before after_reset ever nests.
     Job::abort();
+    viz_cancel_pending_job();  // a file waiting for the pendant's preview
     unwind_cause = "Reset";
 }
 
