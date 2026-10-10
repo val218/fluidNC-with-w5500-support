@@ -44,6 +44,7 @@ void viz_init();
 class Channel;
 bool viz_hold_job(Channel* in, const std::string& path, Channel* out, Channel* ack);
 void viz_cancel_pending_job();  // reset
-// $Job/Prepare=<file>, $Job/Unprepare, $Job/Prepared (see VizGenerator.cpp)
-bool viz_job_command(const char* line, Channel& out);
+// $Viz/... and $Job/Prepare=<file>, $Job/Unprepare, $Job/Prepared: run now on
+// the protocol task, queued for viz_poll() from any other task. false = not ours.
+bool viz_command(const char* line, Channel& out, bool on_protocol_task);
 bool viz_prepared_ready(const std::string& path);  // $SD/Run: was it prepared and shown?

@@ -956,14 +956,14 @@ static void viz_job_shown(const std::string& arg) {
     if (p == _prep_nc && _prep_state == "loading") prep_set("ready", p);
 }
 
-bool viz_job_command(const char* line, Channel& out) {
+static bool job_command(const char* line, bool from_pendant) {
     if (strncasecmp(line, "$Job/", 5) != 0) return false;
     const char* cmd = line + 5;
     if (strncasecmp(cmd, "Prepare=", 8) == 0) {
         std::string p = sd_norm(cmd + 8);
-        if (!is_gcode(p)) { out.print("[MSG:ERR: Prepare: not a G-code file on the SD card]\n"); return true; }
+        if (!is_gcode(p)) { allChannels.print("[MSG:ERR: Prepare: not a G-code file on the SD card]\r\n"); return true; }
         // From the pendant itself it is connected, whatever the link monitor says.
-        if (pendant_connected() || &out == static_cast<Channel*>(pendant_channel())) {
+        if (pendant_connected() || from_pendant) {
             to_pendant("[MSG:VZP:" + p + "]");
             prep_set("loading", p);
         } else {
@@ -973,15 +973,62 @@ bool viz_job_command(const char* line, Channel& out) {
     }
     if (strcasecmp(cmd, "Unprepare") == 0) { prep_clear(true); return true; }
     if (strcasecmp(cmd, "Prepared") == 0) {
-        std::string m = "[MSG:Prepared:" + _prep_state + ":" + _prep_nc + "]\n";
-        out.print(m.c_str());
+        prep_broadcast();
         return true;
     }
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// $Viz/ and $Job/ commands run on the protocol task only. Arriving on the
+// polling task (always while a job runs) they are queued here and run from
+// viz_poll(): the build / push / prepare state belongs to this task alone -
+// touching the open .viz from the polling task while viz_poll() read it
+// crashed the board.
+// ---------------------------------------------------------------------------
+struct VizCmd {
+    std::string line;
+    bool        from_pendant;
+};
+static std::mutex          _cmd_mutex;
+static std::vector<VizCmd> _cmds;
+static std::atomic<int>    _cmd_len { 0 };
+
+static void run_command(const std::string& line, bool from_pendant) {
+    if (strncasecmp(line.c_str(), "$Job/", 5) == 0) {
+        job_command(line.c_str(), from_pendant);
+    } else {
+        viz_handle_command(line.c_str());
+    }
+}
+
+bool viz_command(const char* line, Channel& out, bool on_protocol_task) {
+    if (strncmp(line, "$Viz/", 5) != 0 && strncasecmp(line, "$Job/", 5) != 0) return false;
+    bool from_pendant = &out == static_cast<Channel*>(pendant_channel());
+    if (on_protocol_task) {
+        run_command(line, from_pendant);
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(_cmd_mutex);
+    if (_cmds.size() < 16) _cmds.push_back({ line, from_pendant });
+    _cmd_len = _cmds.size();
+    return true;
+}
+
+static void drain_commands() {
+    if (_cmd_len == 0) return;
+    std::vector<VizCmd> cmds;
+    {
+        std::lock_guard<std::mutex> lock(_cmd_mutex);
+        cmds.swap(_cmds);
+        _cmd_len = 0;
+    }
+    for (auto& c : cmds) run_command(c.line, c.from_pendant);
+}
+
 void viz_poll() {
     static uint32_t last_slice_ms = 0;
+    drain_commands();
     pending_poll();
     push_step();
     if (!_b.active) {
