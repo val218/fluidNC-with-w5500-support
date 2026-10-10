@@ -14,6 +14,8 @@ plus dpCREATOR additions:
 - SD card usable as a **network drive** on your PC, with TabUI pendant `.viz`
   previews built automatically for every G-code file copied onto it
 - TabUI pendant connection status (`$Pendant/Status`, badge in the WebUI)
+- Job preview on the pendant: **Prepare** a file in the WebUI, it appears on
+  the pendant, then **Run** or **Cancel** from either one (see section 8)
 - PathRetrace / VizGenerator commands for the TabUI pendant
 
 Tested on a dpCREATOR R2/R3 (ESP32-S3-WROOM-1-N16R8).
@@ -80,7 +82,8 @@ the config has the `ethernet:` section.
 5. [Connect gSender over Ethernet](#5-connect-gsender-over-ethernet)
 6. [SD card as a network drive (Windows)](#6-sd-card-as-a-network-drive-windows)
 7. [Pendant connection status](#7-pendant-connection-status)
-8. [Troubleshooting](#8-troubleshooting)
+8. [Job preview on the TabUI pendant (Prepare → Run)](#8-job-preview-on-the-tabui-pendant)
+9. [Troubleshooting](#9-troubleshooting)
 
 ---
 
@@ -352,7 +355,63 @@ every 500 ms, so an unplugged pendant is noticed within about 3 s while the
 machine is idle. During a running job the board streams reports and the
 pendant may stay quiet, so the badge keeps its last state until the job ends.
 
-## 8. Troubleshooting
+## 8. Job preview on the TabUI pendant
+
+The board builds and sends the pendant the toolpath preview of each G-code
+file, so the pendant shows the same part as the WebUI's 3D view.
+
+### Prepare → Run
+
+In the WebUI, SD-card G-code files have a **Prepare** button instead of Run:
+
+1. **Prepare**: the file's path is sent to the pendant, which switches to its
+   DRO screen and draws it; the WebUI viewer shows the same file. A
+   **Prepared** bar above the viewer shows the pendant's state:
+   *loading on the pendant…* → *shown on the pendant* (or *no pendant
+   connected*).
+2. **Run** from either side starts the job: **▶ Run** in the WebUI bar, or
+   **Run** (tap twice) on the pendant, which first raises Z, moves to X0 Y0,
+   then runs the file.
+3. **Cancel** from either side clears it on both.
+
+Flash files keep a direct **▶ Run**. A job started any other way (console,
+classic UI, gSender…) while a pendant is connected waits until the pendant
+shows its preview, then starts by itself; it starts anyway after 15 s
+without progress or if the pendant disconnects, and Reset cancels it.
+
+### `.viz` previews
+
+- `<file>.viz` sits next to the G-code on the SD card and is built
+  **automatically**: after an upload (WebUI, network drive, classic UI), when
+  a job starts, or when the pendant asks for a file without one. The build
+  runs in the background; the controller keeps taking commands.
+- Large files are covered from the first line to the last (two passes: the
+  path is measured, then written with one level of detail for the whole file).
+- The pendant gets a copy sized for its screen: detail smaller than one
+  screen pixel of the part is left out, and it never gets more points than it
+  has memory for.
+- WebUI file list: green dot = preview ready, red = not built yet (it will be
+  when needed), blinking amber = being built. The **.viz** button builds or
+  rebuilds it by hand (only needed for older files).
+- `.nc .gcode .gc .ngc .tap .cnc .g` files are supported, including Vectric /
+  Mach `.tap` headers (`G90.1` / `G91.1`).
+
+### Commands
+
+```
+$Job/Prepare=/file.nc     show a file on the pendant (WebUI Prepare)
+$Job/Unprepare            cancel it
+$Job/Prepared             report: [MSG:Prepared:<loading|ready|nopendant|none>:<file>]
+$Viz/Refresh=/file.nc     rebuild a file's .viz in the background
+$Viz/Push=/file.nc        send a file's preview to the pendant (the pendant does this)
+$Pendant/Trace=on|off     echo the pendant's command lines (PND> ...) to the WebUI terminal
+$Pendant/Debug            link counters: bytes, lines, noise / dropped bytes
+```
+
+While a preview is being built or sent, the WebUI terminal shows `VizBusy`,
+`VizPush: ... N of M points, X mm detail` and `VizReady` / `VizErr` lines.
+
+## 9. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -362,6 +421,8 @@ pendant may stay quiet, so the badge keeps its last state until the job ends.
 | `Test-NetConnection <ip> -Port <port>` → `TcpTestSucceeded : False` but ping OK | Telnet port differs from what you test; check `$Telnet/Port`, `$Telnet/Enable=ON`. |
 | gSender: *"Remote mode has been disabled"* | Controller IP was entered in Remote Mode. Use **Config → Ethernet** instead. |
 | gSender: *Unable to connect* | IP/port in Config → Ethernet don't match the board; click **Apply Settings**. |
+| Pendant shows no path / a wrong path | Check the WebUI terminal for `VizErr`; press **.viz** on the file to rebuild it. On the pendant's terminal tab, `RX overflow` or `garbled msgs dropped` mean bytes are lost on the pendant cable — use a shorter / shielded cable or a lower baud rate (same on both ends). |
+| Hold / door / reset when the pendant is plugged in or rebooted | Fixed: line noise on the pendant UART is dropped. `$Pendant/Debug` shows how many bytes were dropped. |
 | Boot shows *"Showing startup log from previous panic"* | Capture serial output at 115200 including `Guru Meditation` and `Backtrace:` lines and decode via **Actions → Run workflow** with the backtrace input. |
 
 Windows has no telnet client by default; test the port with PowerShell:

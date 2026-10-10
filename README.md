@@ -3,7 +3,8 @@
 > - [Get the firmware](W5500_ETHERNET.md#1-get-the-firmware) · [Wiring](W5500_ETHERNET.md#2-wiring) · [config.yaml](W5500_ETHERNET.md#3-configyaml) · [Ethernet setup](W5500_ETHERNET.md#4-switch-fluidnc-to-ethernet)
 > - [Connect gSender over Ethernet](W5500_ETHERNET.md#5-connect-gsender-over-ethernet)
 > - [SD card as a network drive + automatic pendant .viz](W5500_ETHERNET.md#6-sd-card-as-a-network-drive-windows)
-> - [Pendant connection status](W5500_ETHERNET.md#7-pendant-connection-status) · [Troubleshooting](W5500_ETHERNET.md#8-troubleshooting)
+> - [Pendant connection status](W5500_ETHERNET.md#7-pendant-connection-status)
+> - [Job preview on the pendant: Prepare → Run](W5500_ETHERNET.md#8-job-preview-on-the-tabui-pendant) · [Troubleshooting](W5500_ETHERNET.md#9-troubleshooting)
 > - WebUI sources and build: [webui/README.md](webui/README.md)
 
 <img src="https://github.com/bdring/FluidNC/wiki/images/logos/FluidNC.svg" width="600">
