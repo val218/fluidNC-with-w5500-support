@@ -91,6 +91,13 @@ the config has the `ethernet:` section.
 
 Firmware is built automatically by GitHub Actions on every push to this branch.
 
+**Easiest:** the release
+[**w5500-latest**](https://github.com/val218/fluidNC-with-w5500-support/releases/tag/w5500-latest)
+always holds the newest build as plain files (no GitHub login, no zip):
+`merged-flash.bin`, `firmware.bin`, … and `version.txt` (which commit).
+
+Or from Actions (needs a GitHub login):
+
 1. Open the **Actions** tab of this repository.
 2. Open the latest run of **"Build FluidNC 4.1.1 W5500 (ESP32-S3)"**.
 3. Download the **`fluidnc-4.1.1-w5500-s3-…`** artifact zip at the bottom of

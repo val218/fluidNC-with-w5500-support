@@ -11,6 +11,9 @@ on:
         default: ""
         type: string
 
+permissions:
+  contents: write   # publish the "w5500-latest" release (plain file downloads)
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -87,3 +90,18 @@ jobs:
           name: debug-elf-webui-${{ github.sha }}
           path: debug/
           retention-days: 30
+
+      # Plain downloads, no GitHub login and no zip: Actions artifacts need a
+      # login (other browsers show "page missing") and zipped firmware is
+      # often blocked by browsers. Replaced on every push.
+      - name: Publish as release "w5500-latest"
+        if: github.ref == 'refs/heads/fluidnc-4.1.1-w5500'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHORT=$(git rev-parse --short HEAD)
+          echo "$SHORT $(git log -1 --format=%s)" > out/version.txt
+          gh release delete w5500-latest -y --cleanup-tag || true
+          gh release create w5500-latest out/* --prerelease --target "$GITHUB_SHA" \
+            --title "dpCREATOR FluidNC 4.1.1 W5500 - latest build ($SHORT)" \
+            --notes "Latest build of branch fluidnc-4.1.1-w5500 (commit $SHORT), replaced on every push. merged-flash.bin = fresh board at 0x0 (overwrites config.yaml); firmware.bin = update at 0x10000 or via the WebUI. See W5500_ETHERNET.md."
