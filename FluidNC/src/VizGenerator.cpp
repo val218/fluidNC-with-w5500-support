@@ -855,6 +855,7 @@ struct PendingJob {
     Channel*    ack    = nullptr;
     std::string nc;
     uint32_t    deadline = 0;
+    uint32_t    since    = 0;
 };
 static PendingJob        _pj;
 static const uint32_t    job_wait_ms = 15000;
@@ -870,6 +871,7 @@ bool viz_hold_job(Channel* in, const std::string& path, Channel* out, Channel* a
     _pj.ack      = ack;
     _pj.nc       = path;
     _pj.deadline = millis() + job_wait_ms;
+    _pj.since    = millis();
     to_pendant("[MSG:VZJ:" + path + "]");
     allChannels.print_except("[MSG:JobWait:starting once the pendant shows the preview]\r\n", static_cast<Channel*>(pendant_channel()));
     return true;
@@ -898,7 +900,10 @@ static void pending_poll() {
     if (busy) _pj.deadline = now + job_wait_ms;
     bool timeout = (int32_t)(now - _pj.deadline) >= 0;
     if (!_pj.ready && !timeout && pendant_connected()) return;
-    if (!state_is(State::Idle)) return;  // e.g. a jog still finishing
+    if (!state_is(State::Idle)) {  // e.g. a jog still finishing; never wait for good
+        if (now - _pj.since > 120000) viz_cancel_pending_job();
+        return;
+    }
     if (!_pj.ready) {
         allChannels.print(timeout ? "[MSG:JobWait:pendant did not confirm - starting]\r\n"
                                   : "[MSG:JobWait:pendant disconnected - starting]\r\n");

@@ -54,7 +54,7 @@ public:
     uint32_t noise() const { return _noise; }
     uint32_t rx_bytes() const { return _rx_bytes; }
     uint32_t rx_dropped() const { return _rx_dropped; }
-    void     set_rt_guard(bool on) { _rt_guard = on; }
+    void     set_rt_guard(bool on);
     void     set_trace(bool on) { _trace = on; }
     bool     trace() const { return _trace; }
 

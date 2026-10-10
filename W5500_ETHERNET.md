@@ -362,7 +362,8 @@ file, so the pendant shows the same part as the WebUI's 3D view.
 
 ### Prepare → Run
 
-In the WebUI, SD-card G-code files have a **Prepare** button instead of Run:
+SD-card G-code files have a **Prepare** button instead of Run — in the WebUI
+and in the pendant's Files tab; both show the same prepared file:
 
 1. **Prepare**: the file's path is sent to the pendant, which switches to its
    DRO screen and draws it; the WebUI viewer shows the same file. A
@@ -422,6 +423,7 @@ While a preview is being built or sent, the WebUI terminal shows `VizBusy`,
 | gSender: *"Remote mode has been disabled"* | Controller IP was entered in Remote Mode. Use **Config → Ethernet** instead. |
 | gSender: *Unable to connect* | IP/port in Config → Ethernet don't match the board; click **Apply Settings**. |
 | Pendant shows no path / a wrong path | Check the WebUI terminal for `VizErr`; press **.viz** on the file to rebuild it. On the pendant's terminal tab, `RX overflow` or `garbled msgs dropped` mean bytes are lost on the pendant cable — use a shorter / shielded cable or a lower baud rate (same on both ends). |
+| Board stops answering (WebUI, pendant, serial) after the pendant was plugged in / rebooted | Fixed: XON/XOFF is off on the pendant UART — a noise byte that looked like XOFF paused the board's transmitter and blocked it. |
 | Hold / door / reset when the pendant is plugged in or rebooted | Fixed: line noise on the pendant UART is dropped. `$Pendant/Debug` shows how many bytes were dropped. |
 | Boot shows *"Showing startup log from previous panic"* | Capture serial output at 115200 including `Guru Meditation` and `Backtrace:` lines and decode via **Actions → Run workflow** with the backtrace input. |
 

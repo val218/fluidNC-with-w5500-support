@@ -259,10 +259,25 @@ int UartChannel::read() {
     if (c == 0x11) {
         // 0x11 is XON.  If we receive that, it is a request to use software flow control
         // 0 0 means use default values from uart.cpp
-        _uart->setSwFlowControl(true, 0, 0);
+        // Not on the TabUI pendant: it never throttles us (it buffers in RAM),
+        // and with flow control on, one 0x13 (XOFF) from line noise - pendant
+        // reboot, cable plugged in - paused our transmitter for good: writes
+        // to this UART then block forever and take the polling task, and with
+        // it every channel, down ("board stops responding").
+        if (!_rt_guard) {
+            _uart->setSwFlowControl(true, 0, 0);
+        }
         return -1;
     }
     return c;
+}
+
+void UartChannel::set_rt_guard(bool on) {
+    if (on && !_rt_guard && _uart) {
+        _uart->setSwFlowControl(false, 0, 0);
+        _uart->forceXon();  // release a transmitter an XOFF may already have paused
+    }
+    _rt_guard = on;
 }
 
 void UartChannel::flushRx() {
