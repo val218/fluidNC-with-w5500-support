@@ -32,7 +32,16 @@ private:
     volatile uint32_t _lines        = 0;
     volatile uint32_t _noise        = 0;  // bytes that no FluidNC peer sends
     volatile uint32_t _rx_bytes     = 0;
-    void              note_rx(int c);
+    bool              note_rx(int c);  // true: a byte no pendant sends (noise)
+
+    // Pendant guard (uart_channel1 only): bytes that arrive in a burst of
+    // line noise - the pendant's boot ROM log at 115200 baud, a cable being
+    // plugged in - are dropped instead of being taken as realtime commands
+    // (feed hold, safety door, reset, macros...).
+    bool              _rt_guard        = false;
+    volatile uint32_t _quarantine_until = 0;
+    volatile uint32_t _rx_dropped      = 0;
+    bool              _trace           = false;  // echo pendant lines to the other channels
 
     static constexpr int _ack_timeout = 2000;
 
@@ -44,6 +53,10 @@ public:
     uint32_t lines() const { return _lines; }
     uint32_t noise() const { return _noise; }
     uint32_t rx_bytes() const { return _rx_bytes; }
+    uint32_t rx_dropped() const { return _rx_dropped; }
+    void     set_rt_guard(bool on) { _rt_guard = on; }
+    void     set_trace(bool on) { _trace = on; }
+    bool     trace() const { return _trace; }
 
     UartChannel(objnum_t num, bool addCR = false);
 

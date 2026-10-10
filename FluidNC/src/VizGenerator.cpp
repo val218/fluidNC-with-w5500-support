@@ -15,6 +15,7 @@
 #include "Job.h"              // Job::active
 #include "PendantLink.h"      // pendant_channel
 #include "UartChannel.h"
+#include "Logging.h"          // message_queue, MsgLevelNone
 #include "FluidPath.h"        // keeps the SD card mounted while we use it
 #include "Planner.h"          // plan_get_block_buffer_available
 #include "Machine/MachineConfig.h"  // config->_planner_blocks
@@ -103,6 +104,7 @@ static const int HEADER_W = 96;  // fixed-width header, rewritten in place at th
 
 struct VizBuild {
     bool                       active = false;
+    bool                       push   = false;  // send it to the pendant when done
     VizMode                    mode   = VizMode::Auto;
     std::string                nc, out, tmp;
     std::unique_ptr<FluidPath> mount;  // SD is mounted on demand; hold it while we work
@@ -168,12 +170,13 @@ static void build_fail(const char* what, const std::string& path) {
 }
 
 // Open the input and output; false (and a VizErr) when that is not possible.
-static bool build_begin(const std::string& nc, VizMode mode) {
+static bool build_begin(const std::string& nc, VizMode mode, bool push) {
     _b        = VizBuild();
     _b.nc     = nc;
     _b.out    = viz_path(nc);
     _b.tmp    = _b.out + ".tmp";
     _b.mode   = mode;
+    _b.push   = push;
     _auto_mode = (mode == VizMode::Auto);
     _cancel    = false;
 
@@ -323,6 +326,8 @@ static void process_line(char* linebuf) {
     _modal_x = new_x; _modal_y = new_y; _modal_z = new_z;
 }
 
+static void push_begin(const std::string& vpath);
+
 static void build_finish() {
     flush_pending();
     fclose(_b.in); _b.in = nullptr;
@@ -343,7 +348,10 @@ static void build_finish() {
     snprintf(done_msg, sizeof(done_msg), "VizReady:%s:%d:%.3f:%.3f:%.3f:%.3f",
              _b.out.c_str(), _b.n_points, _b.xmin, _b.xmax, _b.ymin, _b.ymax);
     viz_msg(done_msg);
+    bool        push = _b.push;
+    std::string out  = _b.out;
     build_close(true);
+    if (push) push_begin(out);
 }
 
 // Advance the current build until `budget_us` is used up.
@@ -387,6 +395,103 @@ bool viz_exists(const std::string& nc_path) {
     return ok;
 }
 
+
+// ---------------------------------------------------------------------------
+// Push a .viz to the pendant ($Viz/Push=). FluidNC sends the points, the
+// pendant only listens - no file reads from the pendant, no request/reply
+// matching. Messages go to the pendant UART only:
+//   [MSG:VZB:<n>:<xmin>:<xmax>:<ymin>:<ymax>:<viz path>]   begin
+//   [MSG:VZ:<seq>:<x,y,z,t,ln>;<x,y,z,t,ln>;...]           up to 4 points
+//   [MSG:VZE:<count>:<viz path>]                           end
+//   [MSG:VZX:<viz path>:<reason>]                          cannot send it
+// Paced from viz_poll() so the UART and the output queue are never flooded.
+// ---------------------------------------------------------------------------
+struct VizPush {
+    bool                       active = false;
+    std::string                path;  // .viz
+    std::unique_ptr<FluidPath> mount;
+    FILE*                      f     = nullptr;
+    int                        seq   = 0;
+    int                        count = 0;
+    uint32_t                   last_ms = 0;
+};
+static VizPush _p;
+
+static void to_pendant(const std::string& line) {
+    UartChannel* ch = pendant_channel();
+    if (ch) {
+        ch->sendLine(MsgLevelNone, line);
+    }
+}
+
+static void push_end() {
+    if (_p.f) { fclose(_p.f); _p.f = nullptr; }
+    _p.mount.reset();
+    _p.active = false;
+}
+
+static void push_begin(const std::string& vpath) {
+    push_end();
+    if (!pendant_channel()) return;
+    std::error_code ec;
+    _p.mount.reset(new FluidPath(vpath, SD, ec));
+    if (!ec) _p.f = fopen(vpath.c_str(), "r");
+    char head[HEADER_W + 8] = {};
+    int  n = 0;
+    float b[4] = {};
+    if (!_p.f || !fgets(head, sizeof(head), _p.f) || !strstr(head, " v3") ||
+        sscanf(head, "VIZ %d %f %f %f %f", &n, &b[0], &b[1], &b[2], &b[3]) != 5) {
+        to_pendant("[MSG:VZX:" + vpath + ":" + (_p.f ? "old format" : "missing") + "]");
+        push_end();
+        return;
+    }
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[MSG:VZB:%d:%.3f:%.3f:%.3f:%.3f:%s]", n, b[0], b[1], b[2], b[3], vpath.c_str());
+    to_pendant(buf);
+    _p.path   = vpath;
+    _p.seq    = 0;
+    _p.count  = 0;
+    _p.active = true;
+    _p.last_ms = 0;
+    snprintf(buf, sizeof(buf), "[MSG:VizPush:%s:%d points]\r\n", vpath.c_str(), n);
+    allChannels.print_except(buf, static_cast<Channel*>(pendant_channel()));
+}
+
+// Send a few messages; false when finished.
+static void push_step() {
+    if (!_p.active) return;
+    uint32_t now = millis();
+    const bool job = Job::active();
+    if (now - _p.last_ms < (job ? 20u : 8u)) return;
+    if (uxQueueMessagesWaiting(message_queue) > 16) return;  // let the output drain first
+    _p.last_ms = now;
+    const int msgs = job ? 3 : 6;
+    char line[64];
+    for (int m = 0; m < msgs; ++m) {
+        std::string out = "[MSG:VZ:" + std::to_string(_p.seq) + ":";
+        int         pts = 0;
+        while (pts < 4 && fgets(line, sizeof(line), _p.f)) {
+            size_t len = strlen(line);
+            while (len && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' ')) line[--len] = '\0';
+            if (!len || !strchr(line, ',')) continue;
+            if (pts) out += ';';
+            out += line;
+            ++pts;
+        }
+        if (pts) {
+            out += ']';
+            to_pendant(out);
+            ++_p.seq;
+            _p.count += pts;
+        }
+        if (pts < 4) {  // end of file
+            to_pendant("[MSG:VZE:" + std::to_string(_p.count) + ":" + _p.path + "]");
+            push_end();
+            return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request queue. Filled from any task (WebDAV/uploads on the web server task,
 // $Viz commands on the polling task); drained by viz_poll() on the protocol
@@ -397,6 +502,7 @@ struct VizRequest {
     std::string path;
     uint32_t    due;
     VizMode     mode;
+    bool        push;  // the pendant wants the points sent to it
 };
 static std::mutex              _q_mutex;
 static std::vector<VizRequest> _queue;
@@ -413,7 +519,7 @@ static bool is_gcode(const std::string& p) {
     return false;
 }
 
-static void enqueue(const std::string& path, uint32_t delay, VizMode mode) {
+static void enqueue(const std::string& path, uint32_t delay, VizMode mode, bool push = false) {
     {
         std::lock_guard<std::mutex> lock(_q_mutex);
         uint32_t due = millis() + delay;
@@ -423,12 +529,13 @@ static void enqueue(const std::string& path, uint32_t delay, VizMode mode) {
                 r.due = due;
                 if (mode == VizMode::Auto) r.mode = VizMode::Auto;  // file changed: rebuild
                 else if (r.mode == VizMode::Job) r.mode = mode;
+                r.push = r.push || push;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            VizRequest r { path, due, mode };
+            VizRequest r { path, due, mode, push };
             if (mode == VizMode::Auto) _queue.push_back(r);
             else _queue.insert(_queue.begin(), r);  // the pendant / the job is waiting for it
         }
@@ -500,7 +607,9 @@ static void start_next() {
         FluidPath       mount { req.path, SD, ec };  // hold the card for the checks below
         if (!ec) {
             if (req.mode != VizMode::Auto && viz_exists(req.path)) {
-                if (req.mode == VizMode::Requested) {
+                if (req.push) {
+                    push_begin(viz_path(req.path));
+                } else if (req.mode == VizMode::Requested) {
                     char msg[200];
                     snprintf(msg, sizeof(msg), "VizReady:%s", viz_path(req.path).c_str());
                     viz_say(msg, false);
@@ -511,12 +620,14 @@ static void start_next() {
                     if (f) {
                         fclose(f);
                         remove(viz_path(req.path).c_str());  // never serve a stale preview for a rewritten file
-                        started = build_begin(req.path, req.mode);
+                        started = build_begin(req.path, req.mode, req.push);
                     }
                 } else {
-                    started = build_begin(req.path, req.mode);
+                    started = build_begin(req.path, req.mode, req.push);
                 }
             }
+        } else if (req.push) {
+            to_pendant("[MSG:VZX:" + viz_path(req.path) + ":no SD card]");
         } else if (req.mode != VizMode::Auto) {
             char msg[200];
             snprintf(msg, sizeof(msg), "VizErr:no SD card:%s (%s)", req.path.c_str(), ec.message().c_str());
@@ -531,6 +642,7 @@ static void start_next() {
 
 void viz_poll() {
     static uint32_t last_slice_ms = 0;
+    push_step();
     if (!_b.active) {
         if (_q_len == 0) return;
         start_next();
@@ -561,6 +673,13 @@ void viz_poll() {
     }
 }
 
+// Pendant: send me this file's preview (build it first if needed).
+static void viz_push_request(const std::string& nc_path) {
+    std::string p = sd_norm(nc_path);
+    if (_p.active && _p.path == viz_path(p)) return;  // already on its way
+    enqueue(p, 0, VizMode::Requested, true);
+}
+
 bool viz_generate(const std::string& nc_path) {
     enqueue(sd_norm(nc_path), 0, VizMode::Requested);
     return true;
@@ -578,6 +697,7 @@ bool viz_handle_command(const char* line) {
     }
     // Pendant: answer VizReady when the .viz exists, otherwise build it.
     if (strncmp(cmd, "Generate=", 9) == 0) { viz_generate(cmd + 9); return true; }
+    if (strncmp(cmd, "Push=", 5) == 0) { viz_push_request(cmd + 5); return true; }
     if (strncmp(cmd, "Delete=", 7) == 0) {
         std::string     p = sd_norm(cmd + 7);
         std::error_code ec;

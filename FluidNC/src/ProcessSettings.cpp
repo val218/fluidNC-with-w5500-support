@@ -1365,6 +1365,11 @@ Error execute_line(const char* line, Channel& channel, AuthenticationLevel auth_
         pendant_debug(channel);
         return Error::Ok;
     }
+    if (strncasecmp(line, "$Pendant/Trace=", 15) == 0) {
+        const char* v = line + 15;
+        pendant_trace(channel, strcasecmp(v, "on") == 0 || strcmp(v, "1") == 0);
+        return Error::Ok;
+    }
     if (strncmp(line, "$Retrace/", 9) == 0 || strncmp(line, "$Viz/", 5) == 0) {
         if (!on_protocol_task && !Job::channel()) {
             return cmd_queue_defer(line, channel) ? Error::Deferred : Error::AnotherInterfaceBusy;

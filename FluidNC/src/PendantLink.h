@@ -18,4 +18,5 @@ UartChannel* pendant_channel();          // uart_channel1 if configured, else nu
 void         pendant_poll();             // call often from the polling task
 void         pendant_report(Channel& out);
 void         pendant_debug(Channel& out);  // $Pendant/Debug: raw counters
+void         pendant_trace(Channel& out, bool on);  // $Pendant/Trace=on|off
 const char*  pendant_state_name();

@@ -88,8 +88,9 @@ void pendant_debug(Channel& out) {
     }
     uint32_t now = millis();
     snprintf(buf, sizeof(buf),
-             "[MSG:INFO: Pendant %s: rx bytes %u, polls %u, lines %u, noise bytes %u, last activity %s%.1f s ago, last tx %.1f s ago]\n",
+             "[MSG:INFO: Pendant %s: rx bytes %u, polls %u, lines %u, noise bytes %u, dropped %u, trace %s, last activity %s%.1f s ago, last tx %.1f s ago]\n",
              name(_link), (unsigned)ch->rx_bytes(), (unsigned)ch->pings(), (unsigned)ch->lines(), (unsigned)ch->noise(),
+             (unsigned)ch->rx_dropped(), ch->trace() ? "on" : "off",
              ch->rx_seen() ? "" : "never/", ch->rx_seen() ? (now - ch->last_rx_ms()) / 1000.0f : 0.0f,
              (now - ch->last_tx_ms()) / 1000.0f);
     out.print(buf);
@@ -108,6 +109,9 @@ void pendant_poll() {
     }
     _last_poll   = now;
     UartChannel* ch = pendant_channel();
+    if (ch) {
+        ch->set_rt_guard(true);  // line-noise bursts never become realtime commands
+    }
     Link         l  = evaluate(ch);
     if (!_initialized) {
         _initialized = true;
@@ -120,4 +124,12 @@ void pendant_poll() {
         snprintf(buf, sizeof(buf), "[MSG:Pendant:%s]\r\n", name(l));
         allChannels.print_except(buf, ch);
     }
+}
+
+void pendant_trace(Channel& out, bool on) {
+    UartChannel* ch = pendant_channel();
+    if (ch) {
+        ch->set_trace(on);
+    }
+    out.print(on ? "[MSG:INFO: Pendant trace on: its command lines are echoed as PND>]\n" : "[MSG:INFO: Pendant trace off]\n");
 }

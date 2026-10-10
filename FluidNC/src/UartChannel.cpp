@@ -191,7 +191,7 @@ bool UartChannel::realtimeOkay(char c) {
     return _lineedit->realtime(c);
 }
 
-void UartChannel::note_rx(int c) {
+bool UartChannel::note_rx(int c) {
     uint32_t now = millis();
     ++_rx_bytes;
     if (c == 0x11) {
@@ -201,11 +201,15 @@ void UartChannel::note_rx(int c) {
         _last_rx_ms = now;
         _rx_seen    = true;
     }
+    // What a pendant sends: printable text, line ends, XON/XOFF, Ctrl-X,
+    // Ctrl-L, and single-byte realtime commands (jog cancel, overrides,
+    // coolant toggles) plus the JSON ack 0xB2.
     bool plausible = (c >= 0x20 && c < 0x7f) || c == '\r' || c == '\n' || c == '\t' || c == 0x11 || c == 0x13 || c == 0x18 ||
-                     (c >= 0x80 && c <= 0xA1);
+                     c == 0x0c || c == 0x85 || (c >= 0x90 && c <= 0x9e) || c == 0xa0 || c == 0xa1 || c == 0xb2;
     if (!plausible) {
         ++_noise;
     }
+    return !plausible;
 }
 
 bool UartChannel::lineComplete(char* line, char c) {
@@ -217,6 +221,12 @@ bool UartChannel::lineComplete(char* line, char c) {
         _linelen        = _lineedit->finish();
         _line[_linelen] = '\0';
         strcpy(line, _line);
+        if (_trace) {
+            std::string t = "[MSG:PND> ";
+            t += _line;
+            t += "]\r\n";
+            allChannels.print_except(t.c_str(), this);
+        }
         _linelen = 0;
         return true;
     }
@@ -224,9 +234,27 @@ bool UartChannel::lineComplete(char* line, char c) {
 }
 
 int UartChannel::read() {
-    auto c = _uart->read();
-    if (c >= 0) {
-        note_rx(c);
+    int c;
+    for (;;) {
+        c = _uart->read();
+        if (c < 0) {
+            return c;
+        }
+        bool noise = note_rx(c);
+        if (!_rt_guard) {
+            break;
+        }
+        uint32_t now = millis();
+        if (noise) {
+            // Drop the rest of the burst too: some of its bytes look like
+            // realtime commands ('!', 0x18...).
+            _quarantine_until = now + 300;
+        }
+        if (noise || (int32_t)(_quarantine_until - now) > 0) {
+            ++_rx_dropped;
+            continue;
+        }
+        break;
     }
     if (c == 0x11) {
         // 0x11 is XON.  If we receive that, it is a request to use software flow control
