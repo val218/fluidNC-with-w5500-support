@@ -37,14 +37,11 @@
 #include <esp_timer.h>  // esp_timer_get_time
 
 #define VIZ_MAX_POINTS    8000
-#define VIZ_SAMPLE_EVERY  1   // keep every cut unless the file is large (see thinning)
-#define VIZ_MIN_DIST_MM   0.5f
 #define VIZ_ARC_SEGMENTS  16
 
 
 // Thinning, scaled per file so large files are covered end to end instead of
 // stopping at VIZ_MAX_POINTS part-way through.
-static int   _sample_every = VIZ_SAMPLE_EVERY;
 static int   _arc_segments = VIZ_ARC_SEGMENTS;
 static float _modal_x = 0, _modal_y = 0, _modal_z = 0;
 static bool  _modal_abs  = true;
@@ -119,12 +116,31 @@ struct VizBuild {
     int                        pend_line;
     bool                       pend_ok;
     uint32_t                   last_busy_ms;
+    // Two passes: 1 measures the path (length, rapids, bounds), 2 writes it
+    // with one detail size for the whole file, so the point budget covers
+    // the file end to end (a large file used to stop part-way at 8000).
+    int                        pass = 1;
+    double                     plen = 0;    // path length (pass 1)
+    int                        forced = 0;  // rapids / rapid<->cut switches (pass 1)
+    float                      res = 0;     // detail size in mm (pass 2)
+    int                        retries = 0; // pass 2 restarted with a coarser res
 };
 static VizBuild         _b;
 static std::atomic<bool> _cancel { false };
 static std::string      _current;  // path being built (guarded by _q_mutex)
 
 static void emit(float x, float y, float z, int t, int line) {
+    if (_b.pass == 1) {  // measuring
+        if (_b.last_px < 1e8f) {
+            float dx = x - _b.last_px, dy = y - _b.last_py, dz = z - _b.last_pz;
+            _b.plen += sqrtf(dx * dx + dy * dy + dz * dz);
+        }
+        if (x < _b.xmin) _b.xmin = x; if (x > _b.xmax) _b.xmax = x;
+        if (y < _b.ymin) _b.ymin = y; if (y > _b.ymax) _b.ymax = y;
+        _b.last_px = x; _b.last_py = y; _b.last_pz = z; _b.last_t = t;
+        _b.n_points++;
+        return;
+    }
     if (_b.n_points >= VIZ_MAX_POINTS) return;
     fprintf(_b.vf, "%.3f,%.3f,%.3f,%d,%d\n", x, y, z, t, line);
     if (x < _b.xmin) _b.xmin = x; if (x > _b.xmax) _b.xmax = x;
@@ -144,8 +160,14 @@ static void write_arc(float x0, float y0, float x1, float y1, float i, float j, 
     float a1 = atan2f(y1 - cy, x1 - cx);
     if (cw) { if (a1 >= a0) a1 -= 2.0f * M_PI; }
     else    { if (a1 <= a0) a1 += 2.0f * M_PI; }
-    for (int s = 1; s <= _arc_segments && _b.n_points < VIZ_MAX_POINTS; s++) {
-        float t = (float)s / _arc_segments;
+    // Segments: one per detail size along the arc (2..16); 16 while measuring.
+    int segs = _arc_segments;
+    if (_b.pass == 2 && _b.res > 0) {
+        float len = r * fabsf(a1 - a0);
+        segs = std::max(2, std::min(VIZ_ARC_SEGMENTS, (int)ceilf(len / _b.res)));
+    }
+    for (int s = 1; s <= segs && (_b.pass == 1 || _b.n_points < VIZ_MAX_POINTS); s++) {
+        float t = (float)s / segs;
         float ang = a0 + t * (a1 - a0);
         emit(cx + r * cosf(ang), cy + r * sinf(ang), z0 + t * (z1 - z0), 1, line);  // helical Z
     }
@@ -193,20 +215,9 @@ static bool build_begin(const std::string& nc, VizMode mode, bool push) {
     _b.in = fopen(nc.c_str(), "r");
     if (!_b.in) { build_fail("cannot open", nc); return false; }
 
-    // File size -> thinning. ~22 bytes per G-code line is typical CAM output;
-    // aim to use ~85% of the point budget over the whole file.
     if (fseek(_b.in, 0, SEEK_END) == 0) _b.file_size = ftell(_b.in);
     fseek(_b.in, 0, SEEK_SET);
-    {
-        const long est_lines = _b.file_size / 22;
-        const long budget    = (VIZ_MAX_POINTS * 85L) / 100;
-        _sample_every        = VIZ_SAMPLE_EVERY;
-        _arc_segments        = VIZ_ARC_SEGMENTS;
-        if (est_lines > budget * VIZ_SAMPLE_EVERY) {
-            _sample_every = (int)((est_lines + budget - 1) / budget);
-            _arc_segments = std::max(3, VIZ_ARC_SEGMENTS * VIZ_SAMPLE_EVERY / _sample_every);
-        }
-    }
+    _arc_segments = VIZ_ARC_SEGMENTS;
 
     remove(_b.tmp.c_str());
     errno = 0;
@@ -307,13 +318,17 @@ static void process_line(char* linebuf) {
         // and cut (so plunges/retracts and the 3D shape survive); thin only
         // runs of cuts at one depth, and then keep the last skipped point
         // before the next kept one so corners stay put.
+        // Pass 1 keeps everything (measuring); pass 2 keeps a cut point when it
+        // is _b.res away from the last kept one (XY or depth).
         int   t      = (motion == 0) ? 0 : 1;
         float dx     = new_x - _b.last_px, dy = new_y - _b.last_py;
         bool  first  = _b.last_px > 1e8f;
-        bool  zchg   = fabsf(new_z - _b.last_pz) > 0.001f;
         bool  tchg   = t != _b.last_t;
-        bool  far    = sqrtf(dx*dx + dy*dy) >= VIZ_MIN_DIST_MM;
-        bool  keep   = first || zchg || tchg || t == 0 || (far && ++_b.sample_ct >= _sample_every);
+        if (_b.pass == 1 && (t == 0 || tchg)) ++_b.forced;
+        float res    = _b.pass == 1 ? 0.0f : _b.res;
+        bool  zchg   = fabsf(new_z - _b.last_pz) > std::max(res, 0.001f);
+        bool  far    = (dx * dx + dy * dy) >= res * res;
+        bool  keep   = first || zchg || tchg || t == 0 || far;
         if (keep) {
             if (zchg || tchg || t == 0) flush_pending();
             emit(new_x, new_y, new_z, t, line_num);
@@ -354,15 +369,61 @@ static void build_finish() {
     if (push) push_begin(out);
 }
 
+// (Re)start the writing pass with detail size res.
+static bool pass2_start(float res) {
+    _b.pass = 2;
+    _b.res  = res;
+    fseek(_b.in, 0, SEEK_SET);
+    if (_b.vf) { fclose(_b.vf); _b.vf = nullptr; }
+    errno = 0;
+    _b.vf = fopen(_b.tmp.c_str(), "w");
+    if (!_b.vf) { build_fail("cannot write", _b.tmp); return false; }
+    fprintf(_b.vf, "%-*s\n", HEADER_W - 1, "VIZ 0");
+    _modal_x = 0; _modal_y = 0; _modal_z = 0;
+    _modal_abs = true; _modal_inch = false;
+    _modal_motion = -1;
+    _b.xmin = 1e9f; _b.xmax = -1e9f; _b.ymin = 1e9f; _b.ymax = -1e9f;
+    _b.n_points = 0; _b.line_num = 0; _b.sample_ct = 0;
+    _b.last_px = 1e9f; _b.last_py = 1e9f; _b.last_pz = 0; _b.last_t = -1;
+    _b.pend_ok = false; _b.pend_line = 0;
+    return true;
+}
+
+// Pass 1 done: one detail size that spreads the point budget over the whole
+// path (rapids and rapid/cut switches are always kept), never finer than
+// 1/4000 of the part.
+static bool pass1_done() {
+    const double budget = VIZ_MAX_POINTS * 0.9;
+    double avail = std::max(budget - _b.forced, budget / 4);
+    float  span  = std::max(_b.xmax - _b.xmin, _b.ymax - _b.ymin);
+    float  res   = (float)(_b.plen / avail);
+    res          = std::max(res, span > 0 ? span / 4000.0f : 0.0f);
+    res          = std::max(res, 0.005f);
+    return pass2_start(res);
+}
+
 // Advance the current build until `budget_us` is used up.
 static void build_step(int64_t budget_us) {
     if (_cancel) { build_close(false); return; }
     const int64_t t0 = esp_timer_get_time();
     char linebuf[256];
     int  n = 0;
-    while (_b.n_points < VIZ_MAX_POINTS) {
+    for (;;) {
+        if (_b.pass == 2 && _b.n_points >= VIZ_MAX_POINTS) {
+            // More points than measured: coarser detail, write again.
+            if (_b.retries < 3 && !feof(_b.in)) {
+                ++_b.retries;
+                if (!pass2_start(_b.res * 1.6f)) return;
+                continue;
+            }
+            break;
+        }
         if (!read_line(linebuf, sizeof(linebuf))) {
             if (ferror(_b.in)) { errno = EIO; build_fail("read error", _b.nc); return; }
+            if (_b.pass == 1) {
+                if (!pass1_done()) return;
+                continue;
+            }
             break;  // end of file
         }
         process_line(linebuf);
@@ -373,8 +434,8 @@ static void build_step(int64_t budget_us) {
                     _b.last_busy_ms = now;
                     char msg[200];
                     long pos = ftell(_b.in);
-                    snprintf(msg, sizeof(msg), "VizBusy:%s:%d", _b.nc.c_str(),
-                             _b.file_size > 0 ? (int)(pos * 100 / _b.file_size) : 0);
+                    int  pct = _b.file_size > 0 ? (int)(pos * 50 / _b.file_size) : 0;  // two passes
+                    snprintf(msg, sizeof(msg), "VizBusy:%s:%d", _b.nc.c_str(), _b.pass == 1 ? pct : 50 + pct);
                     viz_msg(msg);
                 }
                 return;
@@ -528,8 +589,12 @@ static void push_begin(const std::string& vpath) {
 
 // Counting pass finished: fits? Otherwise coarser pixel and count again.
 static void push_counted() {
-    if (_p.count > _push_max && _p.iter < 3 && _p.res > 0) {
-        _p.res *= sqrtf((float)_p.count / _push_max) * 1.1f;
+    if (_p.count > _push_max && _p.iter < 10) {
+        // Coarser until it fits. Every-n-th thinning (below) is only a last
+        // resort: it would drop corners.
+        float f = std::max(1.3f, sqrtf((float)_p.count / _push_max) * 1.15f);
+        float span = std::max(_p.b[1] - _p.b[0], _p.b[3] - _p.b[2]);
+        _p.res = _p.res > 0 ? _p.res * f : std::max(span / 2000.0f, 0.01f);
         ++_p.iter;
         push_rewind();
         return;
