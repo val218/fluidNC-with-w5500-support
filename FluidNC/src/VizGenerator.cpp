@@ -346,9 +346,9 @@ static void push_begin(const std::string& vpath);
 static void build_finish() {
     flush_pending();
     fclose(_b.in); _b.in = nullptr;
-    // " v3": generator version (x,y,z,type,line points); older files are rebuilt.
+    // " v4": generator version (v3 points, whole-file coverage); older files are rebuilt.
     char head[HEADER_W + 1];
-    int  n = snprintf(head, sizeof(head), "VIZ %d %.3f %.3f %.3f %.3f v3", _b.n_points, _b.xmin, _b.xmax, _b.ymin, _b.ymax);
+    int  n = snprintf(head, sizeof(head), "VIZ %d %.3f %.3f %.3f %.3f v4", _b.n_points, _b.xmin, _b.xmax, _b.ymin, _b.ymax);
     if (n >= HEADER_W) n = HEADER_W - 1;
     errno = 0;
     bool ok = fseek(_b.vf, 0, SEEK_SET) == 0 && fprintf(_b.vf, "%-*.*s\n", HEADER_W - 1, n, head) == HEADER_W;
@@ -451,7 +451,7 @@ bool viz_exists(const std::string& nc_path) {
     FILE* f = fopen(viz_path(nc_path).c_str(), "r");
     if (!f) return false;
     char head[HEADER_W + 8] = {};
-    bool ok = fgets(head, sizeof(head), f) && strstr(head, " v3");
+    bool ok = fgets(head, sizeof(head), f) && strstr(head, " v4");
     fclose(f);
     return ok;
 }
@@ -566,7 +566,7 @@ static void push_begin(const std::string& vpath) {
     if (!ec) _p.f = fopen(vpath.c_str(), "r");
     char head[HEADER_W + 8] = {};
     int  n = 0;
-    if (!_p.f || !fgets(head, sizeof(head), _p.f) || !strstr(head, " v3") ||
+    if (!_p.f || !fgets(head, sizeof(head), _p.f) || !strstr(head, " v4") ||
         sscanf(head, "VIZ %d %f %f %f %f", &n, &_p.b[0], &_p.b[1], &_p.b[2], &_p.b[3]) != 5) {
         to_pendant("[MSG:VZX:" + vpath + ":" + (_p.f ? "old format" : "missing") + "]");
         push_end();
