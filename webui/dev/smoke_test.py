@@ -88,6 +88,11 @@ with sync_playwright() as p:
     page.click("#make-viz")
     page.wait_for_selector("#log :text('VizAutoReady:/sd/job1.nc.viz')", timeout=6000)
     check(True, "Pendant .viz button (confirmed) builds job1.nc.viz")
+    page.wait_for_selector("#file-list li:has-text('job1.nc') .vizdot.viz-ok", timeout=3000)
+    check("viz-ok" in page.get_attribute("#make-viz", "class"), ".viz state: green dot + green button once built")
+    page.click("#refresh")
+    page.wait_for_selector("#file-list li:has-text('job1.nc') .vizdot.viz-ok", timeout=3000)
+    check(True, ".viz state survives a list refresh (from the card listing)")
 
     # job started elsewhere while another file is shown -> 2D .viz outline, full path when stopped
     page.click("#file-list li:has-text('upl.nc')")

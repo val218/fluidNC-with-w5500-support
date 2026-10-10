@@ -415,6 +415,10 @@
     const auto = kind.startsWith("Auto");
     const k = auto ? kind.slice(4) : kind;
     const name = rest.split(":")[0].replace(/^.*\//, "").replace(/\.viz$/, "");
+    const ncPath = rest.split(":")[0].replace(/\.viz$/, "");
+    if (k === "Queued" || k === "Busy") setVizState(ncPath, "building");
+    else if (k === "Ready") setVizState(ncPath, "ok");
+    else if (k === "Err") { const m = /(\/sd\/[^:()]*?)(\.viz)?(?: \(|:|$)/i.exec(rest); if (m) setVizState(m[1].trim(), "missing"); }
     if (k === "Queued") {
       $("#viz-status").textContent = moving() || S.job
         ? `Pendant .viz ${name}: waiting until the machine stops / the job ends`
@@ -502,11 +506,17 @@
         listEl.append(el("li", { class: "dir", onclick: () => { S.dir = S.dir.replace(/\/[^/]+\/?$/, "") || "/"; refresh(); } },
           el("span", { class: "fname" }, "..")));
       }
+      // Which G-code files already have their pendant preview (<file>.viz).
+      const vizNames = new Set(items.filter((i) => !i.dir && /\.viz$/i.test(i.name)).map((i) => i.name.slice(0, -4)));
       for (const it of items) {
         if (!it.dir && /\.viz(\.tmp)?$/i.test(it.name)) continue; // pendant preview sidecars
+        const gcode = !it.dir && S.fs === "sd" && GCODE_RE.test(it.name);
+        if (gcode) it.viz = vizNames.has(it.name) ? "ok" : "missing";
         const li = el("li", { class: it.dir ? "dir" : "" },
           el("span", { class: "fname" }, it.name),
+          gcode ? el("span", { class: "vizdot" }) : "",
           el("span", { class: "fsize" }, it.dir ? "" : fmtSize(it.size)));
+        if (gcode) { li.dataset.path = it.path; li._item = it; paintViz(li, it.viz); }
         li.onclick = () => {
           if (it.dir) { S.dir = it.path; refresh(); return; }
           $$("li", listEl).forEach((x) => x.classList.toggle("sel", x === li));
@@ -532,6 +542,35 @@
     $("#edit").disabled = !isText || it.size > 256 * 1024;
     $("#preview").disabled = !GCODE_RE.test(it.name);
     $("#make-viz").hidden = S.fs !== "sd" || !GCODE_RE.test(it.name);
+    paintVizButton();
+  }
+
+  // Pendant preview state of a file: ok (green), missing (red), building (amber).
+  const VIZ_TITLES = {
+    ok: "Pendant preview (.viz) is ready",
+    missing: "No pendant preview (.viz) yet - it is built automatically when the pendant or a job needs it; click to build it now",
+    building: "Building the pendant preview (.viz)…",
+  };
+  function paintViz(li, st) {
+    const dot = li.querySelector(".vizdot");
+    if (!dot) return;
+    dot.className = "vizdot viz-" + st;
+    dot.title = VIZ_TITLES[st];
+  }
+  function paintVizButton() {
+    const b = $("#make-viz"), st = S.sel && S.sel.viz;
+    b.classList.remove("viz-ok", "viz-missing", "viz-building");
+    if (st) b.classList.add("viz-" + st);
+    b.title = st ? VIZ_TITLES[st] + (st === "ok" ? " - click to rebuild it" : "") : "Build the TabUI pendant preview (.viz)";
+  }
+  // "/sd/dir/a.nc" (from a Viz message) -> update its dot and the button
+  function setVizState(sdPath, st) {
+    const path = sdPath.replace(/^\/sd/i, "");
+    if (S.fs !== "sd") return;
+    for (const li of $$("li", listEl)) {
+      if (li.dataset.path === path && li._item) { li._item.viz = st; paintViz(li, st); }
+    }
+    if (S.sel && S.sel.path === path) paintVizButton();
   }
 
   function previewSelected() {

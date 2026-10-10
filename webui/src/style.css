@@ -271,3 +271,13 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); }
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; max-width: 90vw;
 }
 .toast.err { border-color: var(--err); color: #ffaba8; }
+
+/* Pendant preview (.viz) state: dot in the SD file list, colour of the .viz button */
+.vizdot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin: 0 6px; background: var(--muted); }
+.vizdot.viz-ok { background: var(--ok); }
+.vizdot.viz-missing { background: var(--err); }
+.vizdot.viz-building { background: var(--warn); animation: vizpulse 1s ease-in-out infinite; }
+@keyframes vizpulse { 50% { opacity: .35; } }
+#make-viz.viz-ok { color: var(--ok); border-color: var(--ok); }
+#make-viz.viz-missing { color: var(--err); border-color: var(--err); }
+#make-viz.viz-building { color: var(--warn); border-color: var(--warn); }
