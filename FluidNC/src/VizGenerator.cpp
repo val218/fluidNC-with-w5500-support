@@ -962,7 +962,8 @@ bool viz_job_command(const char* line, Channel& out) {
     if (strncasecmp(cmd, "Prepare=", 8) == 0) {
         std::string p = sd_norm(cmd + 8);
         if (!is_gcode(p)) { out.print("[MSG:ERR: Prepare: not a G-code file on the SD card]\n"); return true; }
-        if (pendant_connected()) {
+        // From the pendant itself it is connected, whatever the link monitor says.
+        if (pendant_connected() || &out == static_cast<Channel*>(pendant_channel())) {
             to_pendant("[MSG:VZP:" + p + "]");
             prep_set("loading", p);
         } else {
@@ -1032,7 +1033,13 @@ static void viz_push_request(const char* arg) {
         _push_max = 8000;
     }
     std::string p = sd_norm(arg);
-    if (_p.active && _p.path == viz_path(p)) return;  // already on its way
+    // Asked again while it is being sent: the pendant started over (it cleared
+    // what it had), so start over too instead of finishing a half it dropped.
+    if (_p.active && _p.path == viz_path(p)) {
+        std::string vp = _p.path;  // push_begin resets _p
+        push_begin(vp);
+        return;
+    }
     enqueue(p, 0, VizMode::Requested, true);
 }
 

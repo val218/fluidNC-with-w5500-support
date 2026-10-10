@@ -274,8 +274,11 @@ int UartChannel::read() {
 
 void UartChannel::set_rt_guard(bool on) {
     if (on && !_rt_guard && _uart) {
+        // Release a transmitter an XOFF may already have paused, then turn
+        // flow control off (in this order: force-XON touches the flow-control
+        // enable bit, so it must not be the last word).
+        _uart->forceXon();
         _uart->setSwFlowControl(false, 0, 0);
-        _uart->forceXon();  // release a transmitter an XOFF may already have paused
     }
     _rt_guard = on;
 }
