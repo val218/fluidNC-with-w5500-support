@@ -108,6 +108,15 @@
       <button class="btn small" id="load-full" hidden title="Load the full 3D path of the running job now">Load path</button>
       <span class="viewer-file" id="viewer-file">No file loaded</span>
     </div>
+    <div class="prepared" id="prepared" hidden>
+      <span class="prep-label">Prepared</span>
+      <b class="prep-name" id="prep-name"></b>
+      <span class="prep-state" id="prep-state"></span>
+      <span class="prep-btns">
+        <button class="btn accent" id="prep-run">▶ Run</button>
+        <button class="btn" id="prep-cancel">Cancel</button>
+      </span>
+    </div>
     <div class="viewer-canvas" id="viewer"></div>
     <div class="viewer-info" id="viewer-info"></div>
     <div class="progress"><div id="progress-bar"></div></div>
@@ -157,7 +166,7 @@
     <div class="file-run" id="file-run" hidden>
       <div><b id="sel-name"></b> <span class="muted" id="sel-size"></span></div>
       <div class="file-run-btns">
-        <button class="btn accent" id="run">▶ Run</button>
+        <button class="btn accent" id="run" title="Show this file on the pendant and here; then Run or Cancel on either">Prepare</button>
         <button class="btn" id="preview">Preview</button>
         <button class="btn" id="edit">Edit</button>
         <button class="btn" id="make-viz" title="Rebuild the TabUI pendant preview (.viz) for this file (done automatically after uploads)">.viz</button>

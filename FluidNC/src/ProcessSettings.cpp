@@ -1370,14 +1370,14 @@ Error execute_line(const char* line, Channel& channel, AuthenticationLevel auth_
         pendant_trace(channel, strcasecmp(v, "on") == 0 || strcmp(v, "1") == 0);
         return Error::Ok;
     }
-    if (strncmp(line, "$Retrace/", 9) == 0 || strncmp(line, "$Viz/", 5) == 0) {
+    if (strncmp(line, "$Retrace/", 9) == 0 || strncmp(line, "$Viz/", 5) == 0 || strncasecmp(line, "$Job/", 5) == 0) {
         if (!on_protocol_task && !Job::channel()) {
             return cmd_queue_defer(line, channel) ? Error::Deferred : Error::AnotherInterfaceBusy;
         }
         if (gc_state.skip_blocks) {
             return Error::Ok;
         }
-        if (retrace_handle_command(line) || viz_handle_command(line)) {
+        if (retrace_handle_command(line) || viz_handle_command(line) || viz_job_command(line, channel)) {
             return Error::Ok;
         }
         // Unknown $Retrace/ or $Viz/ subcommand: fall through to normal handling

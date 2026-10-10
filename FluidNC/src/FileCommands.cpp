@@ -352,7 +352,8 @@ static Error runFile(const Volume& fs, const char* parameter, AuthenticationLeve
     // FluidNC issue #1862.
     viz_job_started(theFile->path());  // preview for the pendant / WebUI if it has none yet
     // A connected pendant first gets the preview on screen; the job starts after.
-    if (viz_hold_job(theFile, theFile->path(), &out, Job::dispatch_channel)) {
+    // Prepared and shown on the pendant already: start now.
+    if (!viz_prepared_ready(theFile->path()) && viz_hold_job(theFile, theFile->path(), &out, Job::dispatch_channel)) {
         return Error::Deferred;
     }
     Job::nest(theFile, &out, Job::dispatch_channel);

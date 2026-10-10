@@ -77,6 +77,11 @@
       log(line, "msg");
       return;
     }
+    if ((m = /^\[MSG:Prepared:(\w+):(.*)\]$/.exec(line))) {
+      setPrepared(m[1], m[2]);
+      log(line, "msg");
+      return;
+    }
     if ((m = /^\[MSG:JobWait:(.*)\]$/.exec(line))) {
       // The board holds a job until the pendant shows its preview.
       toast("Job: " + m[1], m[1].includes("cancel"));
@@ -548,6 +553,7 @@
     $("#edit").disabled = !isText || it.size > 256 * 1024;
     $("#preview").disabled = !GCODE_RE.test(it.name);
     $("#make-viz").hidden = S.fs !== "sd" || !GCODE_RE.test(it.name);
+    $("#run").textContent = S.fs === "sd" && GCODE_RE.test(it.name) ? "Prepare" : "▶ Run";
     paintVizButton();
   }
 
@@ -586,10 +592,49 @@
   }
   $("#preview").onclick = previewSelected;
 
+  // ------------------------------------------------------------- prepared job
+  // "Prepare" puts the file on the pendant's screen (and in this viewer); the
+  // job is then started - or cancelled - from either side. The board keeps
+  // the state and reports it as [MSG:Prepared:<state>:<file>].
+  const PREP_STATES = {
+    loading: "loading on the pendant…",
+    ready: "shown on the pendant",
+    nopendant: "no pendant connected",
+  };
+  let prepFile = "";
+  function setPrepared(st, file) {
+    const box = $("#prepared");
+    if (st === "none" || !file) { prepFile = ""; box.hidden = true; return; }
+    prepFile = file;
+    box.hidden = false;
+    $("#prep-name").textContent = file.replace(/^\/sd\//i, "");
+    const s = $("#prep-state");
+    s.textContent = PREP_STATES[st] || st;
+    s.className = "prep-state " + st;
+    // show the same file here
+    const path = file.replace(/^\/sd/i, "");
+    if ($("#viewer-file").dataset.path !== "sd:" + path) previewFile("sd", path).catch(() => {});
+  }
+  $("#prep-run").onclick = () => {
+    if (!prepFile) return;
+    if (!idle()) return toast(`Can't start a job while ${S.state}`, true);
+    const path = prepFile.replace(/^\/sd/i, "");
+    if (!confirm(`Run ${path.replace(/^.*\//, "")}?`)) return;
+    send(Files.runCommand("sd", path));
+  };
+  $("#prep-cancel").onclick = () => send("$Job/Unprepare");
+
   $("#run").onclick = async () => {
     const it = S.sel;
     if (!it) return;
     if (!idle()) return toast(`Can't start a job while ${S.state}`, true);
+    if (S.fs === "sd" && GCODE_RE.test(it.name)) {
+      // Prepare: pendant + this viewer show it; Run / Cancel from the bar
+      send("$Job/Prepare=" + it.path);
+      previewFile("sd", it.path).catch(() => {});
+      showPane("viewer");
+      return;
+    }
     if (!confirm(`Run ${it.name}?`)) return;
     if (!(Viewer.job && $("#viewer-file").dataset.path === S.fs + ":" + it.path && !$("#viewer-file").dataset.partial)) {
       previewFile(S.fs, it.path).catch(() => {});

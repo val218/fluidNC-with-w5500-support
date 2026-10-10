@@ -281,3 +281,14 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); }
 #make-viz.viz-ok { color: var(--ok); border-color: var(--ok); }
 #make-viz.viz-missing { color: var(--err); border-color: var(--err); }
 #make-viz.viz-building { color: var(--warn); border-color: var(--warn); }
+
+/* Prepared job: shown on the pendant and here, Run / Cancel on either */
+.prepared { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; padding: 6px 10px;
+  border: 1px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.prepared[hidden] { display: none; }
+.prep-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 700; }
+.prep-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+.prep-state { font-size: 12px; color: var(--muted); }
+.prep-state.ready { color: var(--ok); }
+.prep-state.loading { color: var(--warn); }
+.prep-btns { margin-left: auto; display: flex; gap: 6px; }

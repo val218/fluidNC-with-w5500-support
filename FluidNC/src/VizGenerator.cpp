@@ -905,10 +905,70 @@ static void pending_poll() {
     Job::nest(in, out, ack);
 }
 
+// ---------------------------------------------------------------------------
+// Prepare: "$Job/Prepare=<file>" (WebUI's Prepare button) shows the file on the
+// pendant before anything runs. Shared state, broadcast to every channel but
+// the pendant as [MSG:Prepared:<state>:<file>]:
+//   loading   - the pendant is loading the path
+//   ready     - the pendant shows it ($Viz/Shown)
+//   nopendant - no pendant connected (Run as usual)
+//   none      - nothing prepared (cancelled, or the job started)
+// The pendant gets [MSG:VZP:<file>] (show it, offer Run / Cancel) and
+// [MSG:VZC] (cancelled). Run from either side is the usual $SD/Run;
+// "$Job/Unprepare" cancels from either side; "$Job/Prepared" reports.
+// ---------------------------------------------------------------------------
+static std::string _prep_nc;
+static std::string _prep_state = "none";
+
+static void prep_broadcast() {
+    std::string m = "[MSG:Prepared:" + _prep_state + ":" + _prep_nc + "]\r\n";
+    allChannels.print_except(m.c_str(), static_cast<Channel*>(pendant_channel()));
+}
+static void prep_set(const std::string& state, const std::string& nc) {
+    _prep_state = state;
+    _prep_nc    = nc;
+    prep_broadcast();
+}
+static void prep_clear(bool tell_pendant) {
+    if (_prep_state == "none") return;
+    if (tell_pendant) to_pendant("[MSG:VZC]");
+    prep_set("none", "");
+}
+// $SD/Run of the prepared file: it is running now.
+bool viz_prepared_ready(const std::string& path) {
+    bool ready = _prep_nc == path && _prep_state == "ready";
+    if (_prep_nc == path) prep_clear(false);
+    return ready;
+}
+
 static void viz_job_shown(const std::string& arg) {
     std::string p = sd_norm(arg);
     if (p.size() > 4 && p.compare(p.size() - 4, 4, ".viz") == 0) p.resize(p.size() - 4);
     if (_pj.active && p == _pj.nc) _pj.ready = true;
+    if (p == _prep_nc && _prep_state == "loading") prep_set("ready", p);
+}
+
+bool viz_job_command(const char* line, Channel& out) {
+    if (strncasecmp(line, "$Job/", 5) != 0) return false;
+    const char* cmd = line + 5;
+    if (strncasecmp(cmd, "Prepare=", 8) == 0) {
+        std::string p = sd_norm(cmd + 8);
+        if (!is_gcode(p)) { out.print("[MSG:ERR: Prepare: not a G-code file on the SD card]\n"); return true; }
+        if (pendant_connected()) {
+            to_pendant("[MSG:VZP:" + p + "]");
+            prep_set("loading", p);
+        } else {
+            prep_set("nopendant", p);
+        }
+        return true;
+    }
+    if (strcasecmp(cmd, "Unprepare") == 0) { prep_clear(true); return true; }
+    if (strcasecmp(cmd, "Prepared") == 0) {
+        std::string m = "[MSG:Prepared:" + _prep_state + ":" + _prep_nc + "]\n";
+        out.print(m.c_str());
+        return true;
+    }
+    return false;
 }
 
 void viz_poll() {

@@ -36,6 +36,9 @@ def make_viz(gcode: bytes) -> bytes:
     return (f"VIZ {len(pts)} 0 10 0 10\n" + "\n".join(pts) + "\n").encode()
 
 
+PREP = ["none", ""]  # prepared job: state, /sd/file
+
+
 async def broadcast(texts):
     for out in list(SESSIONS):
         try:
@@ -165,7 +168,29 @@ class Machine:
             return ["ok"]
         if u.startswith("$SD/RUN="):
             self.job = (ln.split("=", 1)[1].strip(), time.time(), 40)
+            if PREP[1] and PREP[1][3:] == self.job[0]:
+                PREP[0], PREP[1] = "none", ""
+                return ["[MSG:Prepared:none:]", "ok"]
             return ["ok"]
+        if u.startswith("$JOB/PREPARE="):
+            src = ln.split("=", 1)[1].strip()
+            src = src if src.startswith("/sd/") else "/sd" + src
+            if PENDANT[0] != "connected":
+                PREP[0], PREP[1] = "nopendant", src
+                return [f"[MSG:Prepared:nopendant:{src}]", "ok"]
+            PREP[0], PREP[1] = "loading", src
+            async def shown():  # the pendant loads the path, then confirms
+                await asyncio.sleep(1.0)
+                if PREP[1] == src and PREP[0] == "loading":
+                    PREP[0] = "ready"
+                    await broadcast([f"[MSG:Prepared:ready:{src}]"])
+            asyncio.get_event_loop().create_task(shown())
+            return [f"[MSG:Prepared:loading:{src}]", "ok"]
+        if u == "$JOB/UNPREPARE":
+            PREP[0], PREP[1] = "none", ""
+            return ["[MSG:Prepared:none:]", "ok"]
+        if u == "$JOB/PREPARED":
+            return [f"[MSG:Prepared:{PREP[0]}:{PREP[1]}]", "ok"]
         if u.startswith("G0") or u.startswith("G90 G0"):
             tgt = list(self.mpos)
             for m in re.findall(r"([XYZ])([-\d.]+)", u):
