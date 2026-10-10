@@ -404,15 +404,74 @@ bool viz_exists(const std::string& nc_path) {
 //   [MSG:VZ:<seq>:<x,y,z,t,ln>;<x,y,z,t,ln>;...]           up to 4 points
 //   [MSG:VZE:<count>:<viz path>]                           end
 //   [MSG:VZX:<viz path>:<reason>]                          cannot send it
+//
+// Sized for the pendant's screen: "$Viz/Push=<px>:<max>:<file>" says the
+// screen is <px> pixels across and it has room for <max> points. Detail
+// smaller than one pixel of the whole part is dropped (a point is kept when
+// it is a pixel away from the last one, changes depth by a pixel, or
+// switches between rapid and cut). If that is still more than <max>, the
+// pixel is enlarged until it fits. A first pass counts, the second sends.
 // Paced from viz_poll() so the UART and the output queue are never flooded.
 // ---------------------------------------------------------------------------
+static int _push_px  = 0;     // pendant screen size in pixels (0 = send every point)
+static int _push_max = 8000;  // points the pendant can hold
+
+struct ThinState {
+    bool        have = false;
+    float       lx = 0, ly = 0, lz = 0;
+    int         lt = -1;
+    bool        pend = false;
+    std::string pline;
+};
+
+// Feed one .viz point line; calls out() for each point to keep.
+template <class F>
+static void thin_point(ThinState& s, const char* line, float res, F&& out) {
+    float    x, y, z;
+    int      t;
+    unsigned ln;
+    if (sscanf(line, "%f,%f,%f,%d,%u", &x, &y, &z, &t, &ln) < 4) return;
+    bool keep = true;
+    if (s.have && res > 0) {
+        float dx = x - s.lx, dy = y - s.ly;
+        bool  tchg = t != s.lt;
+        bool  zchg = fabsf(z - s.lz) >= res;
+        keep       = tchg || zchg || (dx * dx + dy * dy >= res * res);
+        if (keep && (tchg || zchg) && s.pend) out(s.pline.c_str());  // exact corner before a plunge / rapid
+    }
+    if (keep) {
+        out(line);
+        s.have = true; s.lx = x; s.ly = y; s.lz = z; s.lt = t;
+        s.pend = false;
+    } else {
+        s.pend  = true;
+        s.pline = line;
+    }
+}
+template <class F>
+static void thin_end(ThinState& s, F&& out) {
+    if (s.pend) out(s.pline.c_str());  // the last point
+    s.pend = false;
+}
+
 struct VizPush {
     bool                       active = false;
-    std::string                path;  // .viz
+    bool                       sending = false;  // false: counting pass
+    std::string                path;             // .viz
     std::unique_ptr<FluidPath> mount;
     FILE*                      f     = nullptr;
-    int                        seq   = 0;
-    int                        count = 0;
+    long                       data_pos = 0;     // first point line
+    float                      b[4] = {};
+    int                        n_file = 0;       // points in the file
+    float                      res = 0;          // thinning "pixel" in mm
+    int                        iter = 0;
+    int                        count = 0;        // counting pass result
+    int                        stride = 1;
+    int                        idx = 0;          // kept points seen while sending
+    int                        seq = 0;
+    int                        sent = 0;
+    ThinState                  thin;
+    std::vector<std::string>   outq;
     uint32_t                   last_ms = 0;
 };
 static VizPush _p;
@@ -428,6 +487,14 @@ static void push_end() {
     if (_p.f) { fclose(_p.f); _p.f = nullptr; }
     _p.mount.reset();
     _p.active = false;
+    _p.outq.clear();
+}
+
+static void push_rewind() {
+    fseek(_p.f, _p.data_pos, SEEK_SET);
+    _p.thin  = ThinState();
+    _p.count = 0;
+    _p.idx   = 0;
 }
 
 static void push_begin(const std::string& vpath) {
@@ -438,54 +505,100 @@ static void push_begin(const std::string& vpath) {
     if (!ec) _p.f = fopen(vpath.c_str(), "r");
     char head[HEADER_W + 8] = {};
     int  n = 0;
-    float b[4] = {};
     if (!_p.f || !fgets(head, sizeof(head), _p.f) || !strstr(head, " v3") ||
-        sscanf(head, "VIZ %d %f %f %f %f", &n, &b[0], &b[1], &b[2], &b[3]) != 5) {
+        sscanf(head, "VIZ %d %f %f %f %f", &n, &_p.b[0], &_p.b[1], &_p.b[2], &_p.b[3]) != 5) {
         to_pendant("[MSG:VZX:" + vpath + ":" + (_p.f ? "old format" : "missing") + "]");
         push_end();
         return;
     }
-    char buf[256];
-    snprintf(buf, sizeof(buf), "[MSG:VZB:%d:%.3f:%.3f:%.3f:%.3f:%s]", n, b[0], b[1], b[2], b[3], vpath.c_str());
-    to_pendant(buf);
-    _p.path   = vpath;
-    _p.seq    = 0;
-    _p.count  = 0;
-    _p.active = true;
-    _p.last_ms = 0;
-    snprintf(buf, sizeof(buf), "[MSG:VizPush:%s:%d points]\r\n", vpath.c_str(), n);
-    allChannels.print_except(buf, static_cast<Channel*>(pendant_channel()));
+    _p.path     = vpath;
+    _p.data_pos = ftell(_p.f);
+    _p.n_file   = n;
+    float span  = std::max(_p.b[1] - _p.b[0], _p.b[3] - _p.b[2]);
+    _p.res      = (_push_px > 0 && span > 0) ? span / _push_px : 0;
+    _p.iter     = 0;
+    _p.stride   = 1;
+    _p.seq      = 0;
+    _p.sent     = 0;
+    _p.sending  = false;
+    _p.last_ms  = 0;
+    _p.active   = true;
+    push_rewind();
 }
 
-// Send a few messages; false when finished.
+// Counting pass finished: fits? Otherwise coarser pixel and count again.
+static void push_counted() {
+    if (_p.count > _push_max && _p.iter < 3 && _p.res > 0) {
+        _p.res *= sqrtf((float)_p.count / _push_max) * 1.1f;
+        ++_p.iter;
+        push_rewind();
+        return;
+    }
+    _p.stride = (_p.count > _push_max && _push_max > 0) ? (_p.count + _push_max - 1) / _push_max : 1;
+    int n     = (_p.count + _p.stride - 1) / _p.stride;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[MSG:VZB:%d:%.3f:%.3f:%.3f:%.3f:%s]", n, _p.b[0], _p.b[1], _p.b[2], _p.b[3], _p.path.c_str());
+    to_pendant(buf);
+    snprintf(buf, sizeof(buf), "[MSG:VizPush:%s:%d of %d points, %.2f mm detail]\r\n", _p.path.c_str(), n, _p.n_file, _p.res);
+    allChannels.print_except(buf, static_cast<Channel*>(pendant_channel()));
+    _p.sending = true;
+    push_rewind();
+}
+
 static void push_step() {
     if (!_p.active) return;
-    uint32_t now = millis();
+    uint32_t   now = millis();
     const bool job = Job::active();
+    char       line[64];
+    if (!_p.sending) {
+        // Counting: a few hundred lines per call (a 8000-point .viz is ~200 KB).
+        int  lines = job ? 150 : 600;
+        auto cnt   = [&](const char*) { ++_p.count; };
+        while (lines-- > 0) {
+            if (!fgets(line, sizeof(line), _p.f)) {
+                thin_end(_p.thin, cnt);
+                push_counted();
+                return;
+            }
+            thin_point(_p.thin, line, _p.res, cnt);
+        }
+        return;
+    }
     if (now - _p.last_ms < (job ? 20u : 8u)) return;
     if (uxQueueMessagesWaiting(message_queue) > 16) return;  // let the output drain first
     _p.last_ms = now;
+    auto keep = [&](const char* l) {
+        if ((_p.idx++ % _p.stride) != 0) return;
+        std::string s(l);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+        _p.outq.push_back(s);
+    };
     const int msgs = job ? 3 : 6;
-    char line[64];
     for (int m = 0; m < msgs; ++m) {
-        std::string out = "[MSG:VZ:" + std::to_string(_p.seq) + ":";
-        int         pts = 0;
-        while (pts < 4 && fgets(line, sizeof(line), _p.f)) {
-            size_t len = strlen(line);
-            while (len && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' ')) line[--len] = '\0';
-            if (!len || !strchr(line, ',')) continue;
-            if (pts) out += ';';
-            out += line;
-            ++pts;
+        bool eof = false;
+        while (_p.outq.size() < 4) {
+            if (!fgets(line, sizeof(line), _p.f)) {
+                thin_end(_p.thin, keep);
+                eof = true;
+                break;
+            }
+            thin_point(_p.thin, line, _p.res, keep);
         }
-        if (pts) {
+        size_t take = std::min<size_t>(4, _p.outq.size());
+        if (take) {
+            std::string out = "[MSG:VZ:" + std::to_string(_p.seq) + ":";
+            for (size_t i = 0; i < take; ++i) {
+                if (i) out += ';';
+                out += _p.outq[i];
+            }
             out += ']';
+            _p.outq.erase(_p.outq.begin(), _p.outq.begin() + take);
             to_pendant(out);
             ++_p.seq;
-            _p.count += pts;
+            _p.sent += take;
         }
-        if (pts < 4) {  // end of file
-            to_pendant("[MSG:VZE:" + std::to_string(_p.count) + ":" + _p.path + "]");
+        if (eof && _p.outq.empty()) {
+            to_pendant("[MSG:VZE:" + std::to_string(_p.sent) + ":" + _p.path + "]");
             push_end();
             return;
         }
@@ -674,8 +787,24 @@ void viz_poll() {
 }
 
 // Pendant: send me this file's preview (build it first if needed).
-static void viz_push_request(const std::string& nc_path) {
-    std::string p = sd_norm(nc_path);
+// "$Viz/Push=<px>:<max>:<file>" or "$Viz/Push=<file>"
+static void viz_push_request(const char* arg) {
+    if (isdigit((unsigned char)*arg)) {
+        char* e;
+        long  px = strtol(arg, &e, 10);
+        if (*e == ':') {
+            long mx = strtol(e + 1, &e, 10);
+            if (*e == ':') {
+                _push_px  = (int)std::max(0L, std::min(px, 4000L));
+                _push_max = (int)std::max(100L, std::min(mx, 20000L));
+                arg       = e + 1;
+            }
+        }
+    } else {
+        _push_px  = 0;
+        _push_max = 8000;
+    }
+    std::string p = sd_norm(arg);
     if (_p.active && _p.path == viz_path(p)) return;  // already on its way
     enqueue(p, 0, VizMode::Requested, true);
 }
