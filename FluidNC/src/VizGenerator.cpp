@@ -461,8 +461,9 @@ bool viz_exists(const std::string& nc_path) {
 // Push a .viz to the pendant ($Viz/Push=). FluidNC sends the points, the
 // pendant only listens - no file reads from the pendant, no request/reply
 // matching. Messages go to the pendant UART only:
-//   [MSG:VZB:<n>:<xmin>:<xmax>:<ymin>:<ymax>:<viz path>]   begin
-//   [MSG:VZ:<seq>:<x,y,z,t,ln>;<x,y,z,t,ln>;...]           up to 4 points
+//   [MSG:VZB:<n>:<xmin>:<xmax>:<ymin>:<ymax>:<zmin>:<zmax>:<viz path>]   begin
+//   [MSG:VZ:<seq>:<sum>:<x,y,z,t,ln>;<x,y,z,t,ln>;...]     up to 4 points;
+//        <sum> = 4 hex digits, byte sum of the points text (line noise check)
 //   [MSG:VZE:<count>:<viz path>]                           end
 //   [MSG:VZX:<viz path>:<reason>]                          cannot send it
 //
@@ -527,6 +528,7 @@ struct VizPush {
     float                      res = 0;          // thinning "pixel" in mm
     int                        iter = 0;
     int                        count = 0;        // counting pass result
+    float                      zmin = 0, zmax = 0;
     int                        stride = 1;
     int                        idx = 0;          // kept points seen while sending
     int                        seq = 0;
@@ -555,6 +557,8 @@ static void push_rewind() {
     fseek(_p.f, _p.data_pos, SEEK_SET);
     _p.thin  = ThinState();
     _p.count = 0;
+    _p.zmin  = 1e9f;
+    _p.zmax  = -1e9f;
     _p.idx   = 0;
 }
 
@@ -602,7 +606,9 @@ static void push_counted() {
     _p.stride = (_p.count > _push_max && _push_max > 0) ? (_p.count + _push_max - 1) / _push_max : 1;
     int n     = (_p.count + _p.stride - 1) / _p.stride;
     char buf[256];
-    snprintf(buf, sizeof(buf), "[MSG:VZB:%d:%.3f:%.3f:%.3f:%.3f:%s]", n, _p.b[0], _p.b[1], _p.b[2], _p.b[3], _p.path.c_str());
+    if (_p.zmin > _p.zmax) { _p.zmin = _p.zmax = 0; }
+    snprintf(buf, sizeof(buf), "[MSG:VZB:%d:%.3f:%.3f:%.3f:%.3f:%.3f:%.3f:%s]", n, _p.b[0], _p.b[1], _p.b[2], _p.b[3], _p.zmin, _p.zmax,
+             _p.path.c_str());
     to_pendant(buf);
     snprintf(buf, sizeof(buf), "[MSG:VizPush:%s:%d of %d points, %.2f mm detail]\r\n", _p.path.c_str(), n, _p.n_file, _p.res);
     allChannels.print_except(buf, static_cast<Channel*>(pendant_channel()));
@@ -618,7 +624,14 @@ static void push_step() {
     if (!_p.sending) {
         // Counting: a few hundred lines per call (a 8000-point .viz is ~200 KB).
         int  lines = job ? 150 : 600;
-        auto cnt   = [&](const char*) { ++_p.count; };
+        auto cnt   = [&](const char* l) {
+            ++_p.count;
+            float z;
+            if (sscanf(l, "%*f,%*f,%f", &z) == 1) {
+                _p.zmin = std::min(_p.zmin, z);
+                _p.zmax = std::max(_p.zmax, z);
+            }
+        };
         while (lines-- > 0) {
             if (!fgets(line, sizeof(line), _p.f)) {
                 thin_end(_p.thin, cnt);
@@ -651,12 +664,16 @@ static void push_step() {
         }
         size_t take = std::min<size_t>(4, _p.outq.size());
         if (take) {
-            std::string out = "[MSG:VZ:" + std::to_string(_p.seq) + ":";
+            std::string pts;
             for (size_t i = 0; i < take; ++i) {
-                if (i) out += ';';
-                out += _p.outq[i];
+                if (i) pts += ';';
+                pts += _p.outq[i];
             }
-            out += ']';
+            unsigned sum = 0;
+            for (unsigned char c : pts) sum += c;
+            char head[32];
+            snprintf(head, sizeof(head), "[MSG:VZ:%d:%04X:", _p.seq, sum & 0xFFFF);
+            std::string out = head + pts + "]";
             _p.outq.erase(_p.outq.begin(), _p.outq.begin() + take);
             to_pendant(out);
             ++_p.seq;
