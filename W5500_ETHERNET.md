@@ -93,13 +93,15 @@ Firmware is built automatically by GitHub Actions on every push to this branch.
 
 1. Open the **Actions** tab of this repository.
 2. Open the latest run of **"Build FluidNC 4.1.1 W5500 (ESP32-S3)"**.
-3. Download the artifact zip at the bottom of the run page.
+3. Download the **`fluidnc-4.1.1-w5500-s3-…`** artifact zip at the bottom of
+   the run page. (The `debug-elf-webui-…` zip is only for decoding crashes.)
 
 | File | Use |
 |---|---|
 | `merged-flash.bin` | Fresh board. Bootloader + partitions + firmware + filesystem, flash at `0x0`. **Overwrites `config.yaml` with the dpCREATOR R2/R3 example config (`example_configs/dpcreator_r2_r3_w5500.yaml`) - back yours up first if you changed it.** |
 | `firmware.bin` | Board already running FluidNC. Flash at `0x10000` or upload via WebUI. Keeps config and settings. |
-| `firmware.elf` | Debug symbols, only needed to decode a crash backtrace. |
+| `littlefs.bin` | Filesystem only (WebUI + config). |
+| `firmware.elf` | In the separate debug zip: symbols to decode a crash backtrace. |
 
 ```
 esptool.py --chip esp32s3 write_flash 0x0 merged-flash.bin
@@ -423,6 +425,7 @@ While a preview is being built or sent, the WebUI terminal shows `VizBusy`,
 | gSender: *"Remote mode has been disabled"* | Controller IP was entered in Remote Mode. Use **Config → Ethernet** instead. |
 | gSender: *Unable to connect* | IP/port in Config → Ethernet don't match the board; click **Apply Settings**. |
 | Pendant shows no path / a wrong path | Check the WebUI terminal for `VizErr`; press **.viz** on the file to rebuild it. On the pendant's terminal tab, `RX overflow` or `garbled msgs dropped` mean bytes are lost on the pendant cable — use a shorter / shielded cable or a lower baud rate (same on both ends). |
+| Browser / Windows calls the firmware zip *dangerous* | False alarm on an unknown download; the firmware zip now holds only the `.bin` files. If it is still blocked: keep / "Download anyway", or check the file in Windows Security → Protection history and allow it. |
 | Board stops answering (WebUI, pendant, serial) after the pendant was plugged in / rebooted | Fixed: XON/XOFF is off on the pendant UART — a noise byte that looked like XOFF paused the board's transmitter and blocked it. |
 | Hold / door / reset when the pendant is plugged in or rebooted | Fixed: line noise on the pendant UART is dropped. `$Pendant/Debug` shows how many bytes were dropped. |
 | Boot shows *"Showing startup log from previous panic"* | Capture serial output at 115200 including `Guru Meditation` and `Backtrace:` lines and decode via **Actions → Run workflow** with the backtrace input. |

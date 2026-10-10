@@ -49,13 +49,18 @@ jobs:
 
       - name: Collect binaries
         run: |
-          mkdir -p out
+          # out/: only what is flashed. The WebUI page (it carries the Windows
+          # network-drive script as text, which antivirus heuristics flag in a
+          # downloaded archive) and the .elf (backtrace decoding) go to a
+          # separate "debug" artifact.
+          mkdir -p out debug
           B=.pio/build/wifi_s3
-          cp $B/firmware.bin $B/firmware.elf $B/bootloader.bin $B/partitions.bin out/
+          cp $B/firmware.bin $B/bootloader.bin $B/partitions.bin out/
           cp $B/littlefs.bin out/ 2>/dev/null || true
           cp $B/merged-flash.bin out/ 2>/dev/null || true
-          cp webui/dist/index.html.gz out/webui-index.html.gz
-          ls -l out
+          cp $B/firmware.elf debug/
+          cp webui/dist/index.html.gz debug/webui-index.html.gz
+          ls -l out debug
 
       - name: Decode backtrace
         if: ${{ inputs.backtrace != '' }}
@@ -74,4 +79,11 @@ jobs:
         with:
           name: fluidnc-4.1.1-w5500-s3-${{ github.sha }}
           path: out/
+          retention-days: 30
+
+      - name: Upload debug files
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-elf-webui-${{ github.sha }}
+          path: debug/
           retention-days: 30
