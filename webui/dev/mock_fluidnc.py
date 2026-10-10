@@ -169,8 +169,9 @@ class Machine:
         if u.startswith("$SD/RUN="):
             self.job = (ln.split("=", 1)[1].strip(), time.time(), 40)
             if PREP[1] and PREP[1][3:] == self.job[0]:
+                src = PREP[1]
                 PREP[0], PREP[1] = "none", ""
-                return ["[MSG:Prepared:none:]", "ok"]
+                return [f"[MSG:Prepared:running:{src}]", "ok"]
             return ["ok"]
         if u.startswith("$JOB/PREPARE="):
             src = ln.split("=", 1)[1].strip()

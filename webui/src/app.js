@@ -604,7 +604,20 @@
   let prepFile = "";
   function setPrepared(st, file) {
     const box = $("#prepared");
-    if (st === "none" || !file) { prepFile = ""; box.hidden = true; return; }
+    if (st === "running") { prepFile = ""; box.hidden = true; return; }  // started: keep the preview
+    if (st === "none" || !file) {
+      // Cancelled: the prepared file's preview goes too (unless a job runs).
+      const was = prepFile;
+      prepFile = "";
+      box.hidden = true;
+      if (was && !S.job && $("#viewer-file").dataset.path === "sd:" + was.replace(/^\/sd/i, "")) {
+        Viewer.clear();
+        $("#viewer-file").textContent = "No file loaded";
+        $("#viewer-file").dataset.path = "";
+        $("#viewer-info").textContent = "";
+      }
+      return;
+    }
     prepFile = file;
     box.hidden = false;
     $("#prep-name").textContent = file.replace(/^\/sd\//i, "");

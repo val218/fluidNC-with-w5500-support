@@ -920,7 +920,8 @@ static void pending_poll() {
 //   loading   - the pendant is loading the path
 //   ready     - the pendant shows it ($Viz/Shown)
 //   nopendant - no pendant connected (Run as usual)
-//   none      - nothing prepared (cancelled, or the job started)
+//   running   - the prepared file was started (bar goes, preview stays)
+//   none      - nothing prepared (cancelled: previews are cleared)
 // The pendant gets [MSG:VZP:<file>] (show it, offer Run / Cancel) and
 // [MSG:VZC] (cancelled). Run from either side is the usual $SD/Run;
 // "$Job/Unprepare" cancels from either side; "$Job/Prepared" reports.
@@ -945,7 +946,11 @@ static void prep_clear(bool tell_pendant) {
 // $SD/Run of the prepared file: it is running now.
 bool viz_prepared_ready(const std::string& path) {
     bool ready = _prep_nc == path && _prep_state == "ready";
-    if (_prep_nc == path) prep_clear(false);
+    if (_prep_nc == path) {
+        prep_set("running", path);  // "running": the bar goes, the preview stays
+        _prep_state = "none";
+        _prep_nc.clear();
+    }
     return ready;
 }
 
@@ -971,7 +976,12 @@ static bool job_command(const char* line, bool from_pendant) {
         }
         return true;
     }
-    if (strcasecmp(cmd, "Unprepare") == 0) { prep_clear(true); return true; }
+    if (strcasecmp(cmd, "Unprepare") == 0) {
+        // Stop sending its path: the pendant clears its preview on VZC.
+        if (_p.active && !_prep_nc.empty() && _p.path == viz_path(_prep_nc)) push_end();
+        prep_clear(true);
+        return true;
+    }
     if (strcasecmp(cmd, "Prepared") == 0) {
         prep_broadcast();
         return true;
