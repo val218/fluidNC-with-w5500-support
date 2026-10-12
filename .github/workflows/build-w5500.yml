@@ -87,7 +87,9 @@ jobs:
           echo "=== DECODED BACKTRACE ==="
           "$A2L" -pfiaC -e .pio/build/wifi_s3/firmware.elf $ADDRS | tee decoded.txt
           # also as annotations (readable without the job log)
-          while IFS= read -r l; do echo "::notice title=backtrace::$l"; done < decoded.txt
+          # (GitHub keeps 10 annotations per step: 12 lines per annotation)
+          sed -e 's#/home/runner/[^ ]*/components/##' -e 's#/home/runner/work/[^ ]*/FluidNC/#FluidNC/#' decoded.txt | split -l 12 - part_
+          for f in part_*; do echo "::notice title=backtrace::$(sed ':a;N;$!ba;s/\n/%0A/g' $f)"; done
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
